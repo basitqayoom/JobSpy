@@ -1,0 +1,7 @@
+{
+  "search_term": "(\"Frontend Engineer\" OR \"Front-End Engineer\" OR \"Frontend Developer\" OR \"Front-End Developer\" OR \"Software Engineer\" OR \"Software Development Engineer\" OR \"Senior Frontend Engineer\" OR \"Senior Front-End Engineer\" OR \"UI Engineer\" OR \"UI Developer\" OR \"Web Engineer\" OR \"Web Developer\" OR \"Frontend Platform Engineer\" OR \"Frontend Architect\" OR \"SDE II\" OR \"Software Engineer II\")  AND  (React OR ReactJS OR \"Next.js\" OR NextJS OR TypeScript OR JavaScript)  NOT  (Intern OR Internship OR Trainee OR Fresher OR QA OR Testing OR \"Test Engineer\" OR \"QA Engineer\")",
+  "location": "India",
+  "results_wanted": 1000,
+  "hours_old": null,
+  "minutes_old": 30
+}

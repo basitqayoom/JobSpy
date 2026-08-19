@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JobSpy - Latest Jobs</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-2: #1d212b;
+      --border: #2a2f3a;
+      --text: #e6e9ef;
+      --muted: #9aa3b2;
+      --accent: #4f8cff;
+      --priority: #f5c451;
+      --priority-bg: rgba(245, 196, 81, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.4;
+    }
+
+    /* ---- App shell: sticky header + sidebar + main ---- */
+    header.appbar {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      background: rgba(23, 26, 33, 0.92);
+      backdrop-filter: saturate(160%) blur(8px);
+      -webkit-backdrop-filter: saturate(160%) blur(8px);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+    }
+    .appbar-row {
+      display: flex; align-items: center; gap: 12px;
+    }
+    .appbar-row h1 { font-size: 17px; margin: 0; white-space: nowrap; }
+    .appbar-row .grow { flex: 1; min-width: 0; }
+    .appbar-row .status-mini {
+      font-size: 12px; color: var(--muted);
+      display: inline-flex; align-items: center; gap: 6px;
+      white-space: nowrap;
+    }
+    .appbar-row .quick-search {
+      flex: 1; min-width: 180px;
+      padding: 8px 12px; font-size: 13px;
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text);
+    }
+    .appbar-row .quick-search::placeholder { color: var(--muted); }
+    .appbar-summary {
+      color: var(--muted); font-size: 12px; margin-top: 8px;
+      overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+      -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    }
+    .appbar-summary strong { color: var(--text); }
+
+    /* Layout */
+    .shell {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 0;
+      align-items: start;
+    }
+    aside.sidebar {
+      position: sticky;
+      top: 74px; /* below appbar */
+      align-self: start;
+      height: calc(100vh - 74px);
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+      background: var(--panel);
+      padding: 18px 18px 24px;
+    }
+    aside.sidebar h3 {
+      font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); margin: 18px 0 8px; font-weight: 600;
+    }
+    aside.sidebar h3:first-child { margin-top: 0; }
+    .side-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+    .side-field label { font-size: 12px; color: var(--muted); }
+    .side-toggles { display: flex; flex-direction: column; gap: 8px; }
+    .side-actions { display: flex; gap: 8px; margin-top: 14px; }
+    .side-actions .btn { flex: 1; }
+    .backdrop {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      z-index: 20;
+    }
+    #sidebarToggle { display: none; }
+    .title-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    h1 { font-size: 20px; margin: 0; }
+    .meta { color: var(--muted); font-size: 13px; }
+    .meta strong { color: var(--text); }
+    .controls {
+      margin-top: 14px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    input[type="search"], select.filter {
+      flex: 1;
+      min-width: 160px;
+      padding: 9px 12px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+    }
+    input[type="search"] { min-width: 220px; }
+    input[type="search"]::placeholder { color: var(--muted); }
+    select.filter { flex: 0 1 auto; }
+    label.toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--muted);
+      user-select: none;
+      cursor: pointer;
+    }
+    .wrap { padding: 16px 24px 48px; min-width: 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    thead th {
+      text-align: left;
+      padding: 10px 12px;
+      color: var(--muted);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+    }
+    tbody td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    tbody tr:hover { background: var(--panel-2); }
+    tr.priority { background: var(--priority-bg); }
+    tr.priority td.company { color: var(--priority); font-weight: 600; }
+    .badge {
+      display: inline-block;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid var(--priority);
+      color: var(--priority);
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    .badge.new {
+      border-color: #3ddc84;
+      color: #3ddc84;
+    }
+    a.joblink { color: var(--accent); text-decoration: none; }
+    a.joblink:hover { text-decoration: underline; }
+    .empty { color: var(--muted); padding: 40px 12px; text-align: center; }
+    .dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: #3ddc84; margin-right: 6px; vertical-align: middle;
+    }
+    .dot.stale { background: #f0883e; }
+    .dot.error { background: #f04e4e; }
+    .btn {
+      padding: 9px 14px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .settings {
+      margin-top: 14px;
+      padding: 16px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px 16px;
+      align-items: end;
+    }
+    .settings .field { display: flex; flex-direction: column; gap: 5px; }
+    .settings label { font-size: 12px; color: var(--muted); }
+    .settings input {
+      padding: 8px 10px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+    }
+    .settings .actions { flex-direction: row; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .settings .hint { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--muted); }
+    .settings[hidden] { display: none; }
+    #telegramBox[hidden] { display: none; }
+    .save-status { font-size: 13px; color: var(--muted); }
+    .save-status.ok { color: #3ddc84; }
+    .save-status.err { color: #f04e4e; }
+
+    /* Filter chips */
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 3px 8px 3px 10px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 12px; color: var(--text);
+    }
+    .chip button {
+      background: transparent; border: none; color: var(--muted);
+      cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px;
+    }
+    .chip button:hover { color: var(--text); }
+
+    /* Row actions */
+    tbody tr { cursor: pointer; }
+    tbody tr td.actions { white-space: nowrap; }
+    .icon-btn {
+      background: transparent; border: 1px solid transparent;
+      color: var(--muted); cursor: pointer;
+      padding: 3px 7px; border-radius: 6px;
+      font-size: 14px; line-height: 1;
+    }
+    .icon-btn:hover { border-color: var(--border); color: var(--text); }
+    .icon-btn.on { color: var(--priority); }
+    tr.hidden-row { opacity: 0.45; }
+    tr.hidden-row td.company::after {
+      content: " (hidden)"; color: var(--muted); font-weight: 400; font-size: 12px;
+    }
+    .date-cell { font-variant-numeric: tabular-nums; }
+    .date-cell small { color: var(--muted); font-size: 11px; display: block; }
+    kbd {
+      display: inline-block; padding: 1px 5px; font-size: 11px;
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    /* ---- Mobile responsive ---- */
+    @media (max-width: 900px) {
+      .shell { grid-template-columns: 1fr; }
+      #sidebarToggle { display: inline-flex; }
+      aside.sidebar {
+        position: fixed;
+        top: 0; left: 0;
+        height: 100vh; width: min(320px, 88vw);
+        z-index: 50;
+        transform: translateX(-100%);
+        transition: transform 0.22s ease;
+        border-right: 1px solid var(--border);
+        padding-top: 20px;
+        background: var(--panel);
+      }
+      .backdrop { z-index: 45; }
+      body.sidebar-open aside.sidebar { transform: translateX(0); }
+      body.sidebar-open .backdrop { display: block; }
+      .sidebar-header {
+        display: flex; justify-content: space-between; align-items: center;
+        margin-bottom: 8px;
+      }
+      .sidebar-header .close { font-size: 22px; }
+    }
+    @media (min-width: 901px) {
+      .sidebar-header .close { display: none; }
+    }
+    @media (max-width: 720px) {
+      header.appbar { padding: 10px 14px; }
+      .appbar-row h1 { font-size: 15px; }
+      aside.sidebar { top: 0; }
+      thead th { position: static; }
+      .wrap { padding: 12px 14px 40px; }
+      h1 { font-size: 18px; }
+      .meta { font-size: 12px; }
+      .controls { gap: 8px; }
+      input[type="search"] { width: 100%; flex: 1 1 100%; min-width: 0; }
+      .controls .btn, .controls label.toggle { flex: 1 1 auto; justify-content: center; }
+      .settings { grid-template-columns: 1fr 1fr; padding: 12px; }
+      .settings .actions { grid-column: 1 / -1; }
+
+      /* Turn the table into stacked cards */
+      table, thead, tbody, tr, td { display: block; width: 100%; }
+      thead { display: none; }
+      tbody tr {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+      }
+      tbody tr:hover { background: var(--panel); }
+      tr.priority { border-color: var(--priority); }
+      tbody td {
+        border: none;
+        padding: 3px 0;
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+      }
+      tbody td::before {
+        content: attr(data-label);
+        flex: 0 0 72px;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      tbody td.company {
+        font-size: 15px;
+        font-weight: 600;
+        padding-bottom: 6px;
+        margin-bottom: 4px;
+        border-bottom: 1px solid var(--border);
+      }
+      tbody td.company::before { display: none; }
+    }
+    @media (max-width: 420px) {
+      .settings { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="appbar">
+    <div class="appbar-row">
+      <button type="button" id="sidebarToggle" class="btn" aria-label="Filters">☰ Filters</button>
+      <h1>JobSpy</h1>
+      <input type="search" id="filter" class="quick-search" placeholder="Search company, title, location&hellip; ( / )" />
+      <span class="status-mini">
+        <span class="dot" id="statusDot"></span>
+        <span id="status">Loading&hellip;</span>
+      </span>
+      <button type="button" id="settingsToggle" class="btn">Settings</button>
+    </div>
+    <div class="appbar-summary" id="summary"></div>
+    <div class="chips" id="activeChips"></div>
+
+    <form id="settings" class="settings" hidden style="margin-top:14px">
+      <div class="field">
+        <label for="cfgSearch">Search term</label>
+        <input type="text" id="cfgSearch" />
+      </div>
+      <div class="field">
+        <label for="cfgLocation">Location</label>
+        <input type="text" id="cfgLocation" />
+      </div>
+      <div class="field">
+        <label for="cfgResults">Results wanted</label>
+        <input type="number" id="cfgResults" min="1" step="1" />
+      </div>
+      <div class="field">
+        <label for="cfgHours">Hours old</label>
+        <input type="number" id="cfgHours" min="0" step="1" placeholder="blank = ignore" />
+      </div>
+      <div class="field">
+        <label for="cfgMinutes">Minutes old</label>
+        <input type="number" id="cfgMinutes" min="0" step="1" placeholder="blank = ignore" />
+      </div>
+      <div class="field actions">
+        <button type="submit" class="btn primary" id="saveBtn">Save</button>
+        <button type="button" class="btn" id="saveRunBtn">Save &amp; run now</button>
+        <span class="save-status" id="saveStatus"></span>
+      </div>
+      <p class="hint">Saved settings apply on the next scheduled run. "Save &amp; run now" triggers a scrape immediately (results appear within ~1 minute).</p>
+    </form>
+
+    <div id="telegramBox" class="settings" hidden style="margin-top:10px; grid-template-columns: 1fr;">
+      <div class="field" style="gap:10px">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap">
+          <div>
+            <div style="font-size:13px"><b>Telegram notifications</b></div>
+            <div class="hint" id="tgStatus" style="margin-top:4px">Checking…</div>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap">
+            <button type="button" class="btn" id="tgTestBtn">Send test message</button>
+            <button type="button" class="btn" id="tgRefreshBtn">Refresh</button>
+          </div>
+        </div>
+        <div class="hint">
+          Priority-company jobs are pushed to Telegram after each scrape. To enable / change,
+          edit <code>.env</code> in the project root (<code>TELEGRAM_BOT_TOKEN</code>,
+          <code>TELEGRAM_CHAT_ID</code>) and restart the server.
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="backdrop" id="backdrop"></div>
+
+  <div class="shell">
+    <aside class="sidebar" id="sidebar" aria-label="Filters">
+      <div class="sidebar-header">
+        <h3 style="margin:0">Filters</h3>
+        <button type="button" class="icon-btn close" id="sidebarClose" aria-label="Close filters">✕</button>
+      </div>
+      <div class="meta" id="resultCount" style="margin-bottom:12px"></div>
+
+      <div class="side-field">
+        <label for="companyFilter">Company</label>
+        <select id="companyFilter" class="filter"><option value="">All companies</option></select>
+      </div>
+      <div class="side-field">
+        <label for="locationFilter">Location</label>
+        <select id="locationFilter" class="filter"><option value="">All locations</option></select>
+      </div>
+      <div class="side-field">
+        <label for="postedFilter">Posted within</label>
+        <select id="postedFilter" class="filter">
+          <option value="">Any time</option>
+          <option value="1">Last 24 hours</option>
+          <option value="3">Last 3 days</option>
+          <option value="7">Last 7 days</option>
+          <option value="30">Last 30 days</option>
+        </select>
+      </div>
+      <div class="side-field">
+        <label for="sortBy">Sort by</label>
+        <select id="sortBy" class="filter">
+          <option value="default">Priority first</option>
+          <option value="freshest">Freshest (first seen)</option>
+          <option value="newest">Newest posted</option>
+          <option value="oldest">Oldest posted</option>
+          <option value="company">Company (A–Z)</option>
+          <option value="title">Title (A–Z)</option>
+        </select>
+      </div>
+
+      <h3>Show</h3>
+      <div class="side-toggles">
+        <label class="toggle">
+          <input type="checkbox" id="priorityOnly" /> Priority companies only
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="savedOnly" /> Saved only (<span id="savedCount">0</span>)
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="showHidden" /> Show hidden jobs
+        </label>
+      </div>
+
+      <div class="side-actions">
+        <button type="button" id="clearFilters" class="btn">Clear all</button>
+      </div>
+    </aside>
+
+  <div class="wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 20%">Company</th>
+          <th style="width: 32%">Title</th>
+          <th style="width: 18%">Location</th>
+          <th style="width: 12%">Posted</th>
+          <th style="width: 8%">Link</th>
+          <th style="width: 10%">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" style="display:none">
+      No jobs match your filters. <button type="button" class="btn" id="emptyClear" style="margin-left:8px">Clear filters</button>
+    </div>
+    <div class="empty" id="kbdHint" style="font-size:12px;padding:16px 0">
+      Tip: press <kbd>/</kbd> to search, <kbd>Esc</kbd> to clear. Click a row to open the job.
+    </div>
+  </div>
+  </div> <!-- /.shell -->
+
+  <script>
+    const REFRESH_MS = 60000; // re-fetch data.json every 60s
+    const STALE_MS = 1000 * 60 * 60 * 3; // mark stale if data older than 3h
+    let allJobs = [];
+
+    const $ = (id) => document.getElementById(id);
+
+    // ---- Per-job state (saved / hidden) persisted in localStorage ----
+    const LS_SAVED = "jobspy.saved.v1";
+    const LS_HIDDEN = "jobspy.hidden.v1";
+    const loadSet = (k) => { try { return new Set(JSON.parse(localStorage.getItem(k) || "[]")); } catch { return new Set(); } };
+    const saveSet = (k, s) => localStorage.setItem(k, JSON.stringify([...s]));
+    const savedSet = loadSet(LS_SAVED);
+    const hiddenSet = loadSet(LS_HIDDEN);
+    const jobKey = (j) => j.job_url || `${j.company}|${j.title}|${j.location}`;
+
+    function fmtDate(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (isNaN(d)) return iso;
+      return d.toLocaleString();
+    }
+
+    function relDate(iso) {
+      if (!iso) return { rel: "", full: "" };
+      const d = new Date(iso);
+      if (isNaN(d)) return { rel: iso, full: iso };
+      const diffDays = Math.floor((Date.now() - d.getTime()) / 86400000);
+      let rel;
+      if (diffDays <= 0) rel = "Today";
+      else if (diffDays === 1) rel = "Yesterday";
+      else if (diffDays < 7) rel = diffDays + "d ago";
+      else if (diffDays < 30) rel = Math.floor(diffDays / 7) + "w ago";
+      else if (diffDays < 365) rel = Math.floor(diffDays / 30) + "mo ago";
+      else rel = Math.floor(diffDays / 365) + "y ago";
+      return { rel, full: d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) };
+    }
+
+    // Minute-level relative time for first_seen_at.
+    function relSince(iso) {
+      if (!iso) return { rel: "", full: "" };
+      const d = new Date(iso);
+      if (isNaN(d)) return { rel: "", full: "" };
+      const s = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+      let rel;
+      if (s < 60) rel = "just now";
+      else if (s < 3600) rel = Math.floor(s / 60) + "m ago";
+      else if (s < 86400) rel = Math.floor(s / 3600) + "h ago";
+      else rel = Math.floor(s / 86400) + "d ago";
+      return { rel, full: d.toLocaleString() };
+    }
+
+    function escapeHtml(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+
+    function render() {
+      const q = $("filter").value.trim().toLowerCase();
+      const priorityOnly = $("priorityOnly").checked;
+      const companySel = $("companyFilter").value;
+      const locationSel = $("locationFilter").value;
+      const postedDays = parseInt($("postedFilter").value, 10);
+      const sortBy = $("sortBy").value;
+      const tbody = $("rows");
+
+      const cutoff = Number.isFinite(postedDays)
+        ? Date.now() - postedDays * 86400000
+        : null;
+
+      const savedOnly = $("savedOnly").checked;
+      const showHidden = $("showHidden").checked;
+
+      let filtered = allJobs.filter((j) => {
+        const key = jobKey(j);
+        if (!showHidden && hiddenSet.has(key)) return false;
+        if (savedOnly && !savedSet.has(key)) return false;
+        if (priorityOnly && !j.is_priority) return false;
+        if (companySel && j.company !== companySel) return false;
+        if (locationSel && j.location !== locationSel) return false;
+        if (cutoff !== null) {
+          const t = j.date_posted ? Date.parse(j.date_posted) : NaN;
+          if (!Number.isFinite(t) || t < cutoff) return false;
+        }
+        if (!q) return true;
+        return (
+          (j.company || "").toLowerCase().includes(q) ||
+          (j.title || "").toLowerCase().includes(q) ||
+          (j.location || "").toLowerCase().includes(q)
+        );
+      });
+
+      const cmp = (a, b) => (a > b) - (a < b);
+      const seenTs = (j) => j.first_seen_at ? Date.parse(j.first_seen_at) : 0;
+      if (sortBy === "freshest") {
+        filtered.sort((a, b) => seenTs(b) - seenTs(a));
+      } else if (sortBy === "newest") {
+        filtered.sort((a, b) => cmp(b.date_posted || "", a.date_posted || ""));
+      } else if (sortBy === "oldest") {
+        filtered.sort((a, b) => cmp(a.date_posted || "", b.date_posted || ""));
+      } else if (sortBy === "company") {
+        filtered.sort((a, b) => cmp((a.company||"").toLowerCase(), (b.company||"").toLowerCase()));
+      } else if (sortBy === "title") {
+        filtered.sort((a, b) => cmp((a.title||"").toLowerCase(), (b.title||"").toLowerCase()));
+      } else {
+        // default: priority first, then freshest (first_seen), then date_posted
+        filtered.sort((a, b) => {
+          if (!!b.is_priority - !!a.is_priority) return !!b.is_priority - !!a.is_priority;
+          const s = seenTs(b) - seenTs(a);
+          if (s) return s;
+          return cmp(b.date_posted || "", a.date_posted || "");
+        });
+      }
+
+      $("resultCount").textContent = `${filtered.length} of ${allJobs.length} shown`;
+
+      tbody.innerHTML = filtered.map((j) => {
+        const key = jobKey(j);
+        const isSaved = savedSet.has(key);
+        const isHidden = hiddenSet.has(key);
+        const d = relDate(j.date_posted);
+        const s = relSince(j.first_seen_at);
+        const isNew = j.first_seen_at && (Date.now() - Date.parse(j.first_seen_at) < 30 * 60 * 1000);
+        const classes = [
+          j.is_priority ? "priority" : "",
+          isHidden ? "hidden-row" : "",
+        ].filter(Boolean).join(" ");
+        const newBadge = isNew ? '<span class="badge new" title="First seen in the last 30 min">new</span>' : "";
+        const seenLine = s.rel ? `<small title="${escapeHtml(s.full)}">seen ${escapeHtml(s.rel)}</small>` : "";
+        return `
+        <tr class="${classes}" data-key="${escapeHtml(key)}" data-url="${escapeHtml(j.job_url || "")}">
+          <td class="company" data-label="Company">${escapeHtml(j.company)}${j.is_priority ? '<span class="badge" title="Priority company">pinned</span>' : ""}${newBadge}</td>
+          <td data-label="Title">${escapeHtml(j.title)}</td>
+          <td data-label="Location">${escapeHtml(j.location)}</td>
+          <td class="date-cell" data-label="Posted" title="${escapeHtml(d.full)}">${escapeHtml(d.rel)}${seenLine}</td>
+          <td data-label="Link">${j.job_url ? `<a class="joblink" href="${escapeHtml(j.job_url)}" target="_blank" rel="noopener">View ↗</a>` : ""}</td>
+          <td class="actions" data-label="Actions">
+            <button class="icon-btn ${isSaved ? "on" : ""}" data-action="save" title="${isSaved ? "Unsave" : "Save"}">${isSaved ? "★" : "☆"}</button>
+            <button class="icon-btn" data-action="hide" title="${isHidden ? "Unhide" : "Hide"}">${isHidden ? "↺" : "✕"}</button>
+          </td>
+        </tr>`;
+      }).join("");
+
+      $("empty").style.display = filtered.length ? "none" : "block";
+      $("kbdHint").style.display = filtered.length ? "none" : "block";
+      $("savedCount").textContent = savedSet.size;
+      renderChips();
+      syncURL();
+    }
+
+    // ---- Filter chips ----
+    function renderChips() {
+      const chips = [];
+      const add = (label, onClear) => chips.push({ label, onClear });
+      const q = $("filter").value.trim();
+      if (q) add(`“${q}”`, () => { $("filter").value = ""; render(); });
+      if ($("companyFilter").value) add("Company: " + $("companyFilter").value, () => { $("companyFilter").value = ""; render(); });
+      if ($("locationFilter").value) add("Location: " + $("locationFilter").value, () => { $("locationFilter").value = ""; render(); });
+      if ($("postedFilter").value) {
+        const map = { "1": "24h", "3": "3d", "7": "7d", "30": "30d" };
+        add("Posted ≤ " + (map[$("postedFilter").value] || $("postedFilter").value), () => { $("postedFilter").value = ""; render(); });
+      }
+      if ($("priorityOnly").checked) add("Priority only", () => { $("priorityOnly").checked = false; render(); });
+      if ($("savedOnly").checked) add("Saved only", () => { $("savedOnly").checked = false; render(); });
+      if ($("sortBy").value && $("sortBy").value !== "default") {
+        add("Sort: " + $("sortBy").options[$("sortBy").selectedIndex].text.replace(/^Sort: /, ""), () => { $("sortBy").value = "default"; render(); });
+      }
+
+      const el = $("activeChips");
+      el.innerHTML = chips.map((c, i) => `<span class="chip">${escapeHtml(c.label)}<button data-chip="${i}" title="Remove">✕</button></span>`).join("");
+      [...el.querySelectorAll("button[data-chip]")].forEach((btn, i) => btn.addEventListener("click", chips[i].onClear));
+    }
+
+    // ---- URL <-> state sync ----
+    function syncURL() {
+      const params = new URLSearchParams();
+      const q = $("filter").value.trim();
+      if (q) params.set("q", q);
+      if ($("companyFilter").value) params.set("company", $("companyFilter").value);
+      if ($("locationFilter").value) params.set("location", $("locationFilter").value);
+      if ($("postedFilter").value) params.set("posted", $("postedFilter").value);
+      if ($("sortBy").value && $("sortBy").value !== "default") params.set("sort", $("sortBy").value);
+      if ($("priorityOnly").checked) params.set("priority", "1");
+      if ($("savedOnly").checked) params.set("saved", "1");
+      if ($("showHidden").checked) params.set("hidden", "1");
+      const qs = params.toString();
+      const url = qs ? `?${qs}` : location.pathname;
+      history.replaceState(null, "", url);
+    }
+
+    function loadFromURL() {
+      const p = new URLSearchParams(location.search);
+      if (p.has("q")) $("filter").value = p.get("q");
+      if (p.has("company")) $("companyFilter").dataset.pending = p.get("company");
+      if (p.has("location")) $("locationFilter").dataset.pending = p.get("location");
+      if (p.has("posted")) $("postedFilter").value = p.get("posted");
+      if (p.has("sort")) $("sortBy").value = p.get("sort");
+      if (p.get("priority") === "1") $("priorityOnly").checked = true;
+      if (p.get("saved") === "1") $("savedOnly").checked = true;
+      if (p.get("hidden") === "1") $("showHidden").checked = true;
+    }
+
+    function setStatus(text, kind) {
+      $("status").textContent = text;
+      const dot = $("statusDot");
+      dot.className = "dot" + (kind ? " " + kind : "");
+    }
+
+    async function load() {
+      try {
+        const res = await fetch("data.json?_=" + Date.now(), { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        allJobs = Array.isArray(data.jobs) ? data.jobs : [];
+        populateFilterOptions();
+        // Apply any URL-pending select values now that options exist
+        for (const id of ["companyFilter", "locationFilter"]) {
+          const p = $(id).dataset.pending;
+          if (p && [...$(id).options].some(o => o.value === p)) $(id).value = p;
+          delete $(id).dataset.pending;
+        }
+
+        const gen = data.generated_at ? new Date(data.generated_at) : null;
+        const age = gen ? Date.now() - gen.getTime() : Infinity;
+        setStatus(
+          gen ? "Updated " + fmtDate(data.generated_at) : "Updated (unknown time)",
+          age > STALE_MS ? "stale" : null
+        );
+        $("summary").innerHTML =
+          `<strong>${data.count ?? allJobs.length}</strong> jobs &middot; ` +
+          `search: <strong>${escapeHtml(data.search_term || "")}</strong> &middot; ` +
+          `location: <strong>${escapeHtml(data.location || "")}</strong>`;
+        render();
+      } catch (err) {
+        setStatus("Failed to load data.json (" + err.message + ")", "error");
+      }
+    }
+
+    // ---- Settings (read/write web/config.json via server.py) ----
+    async function loadConfig() {
+      try {
+        const res = await fetch("config.json?_=" + Date.now(), { cache: "no-store" });
+        if (!res.ok) return;
+        const c = await res.json();
+        $("cfgSearch").value = c.search_term ?? "";
+        $("cfgLocation").value = c.location ?? "";
+        $("cfgResults").value = c.results_wanted ?? "";
+        $("cfgHours").value = c.hours_old ?? "";
+        $("cfgMinutes").value = c.minutes_old ?? "";
+      } catch (_) { /* ignore */ }
+    }
+
+    function readForm() {
+      const num = (id) => {
+        const v = $(id).value.trim();
+        return v === "" ? null : Number(v);
+      };
+      return {
+        search_term: $("cfgSearch").value.trim(),
+        location: $("cfgLocation").value.trim(),
+        results_wanted: num("cfgResults"),
+        hours_old: num("cfgHours"),
+        minutes_old: num("cfgMinutes"),
+      };
+    }
+
+    function setSaveStatus(msg, kind) {
+      const el = $("saveStatus");
+      el.textContent = msg;
+      el.className = "save-status" + (kind ? " " + kind : "");
+    }
+
+    async function saveConfig() {
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(readForm()),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "save failed");
+      return data.config;
+    }
+
+    $("settingsToggle").addEventListener("click", () => {
+      const s = $("settings");
+      s.hidden = !s.hidden;
+      $("telegramBox").hidden = s.hidden;
+      if (!s.hidden) refreshTelegramStatus();
+    });
+
+    async function refreshTelegramStatus() {
+      const el = $("tgStatus");
+      el.textContent = "Checking…";
+      try {
+        const res = await fetch("/api/telegram/status", { cache: "no-store" });
+        const s = await res.json();
+        if (!s.configured) {
+          el.innerHTML = '<span style="color:#f0883e">●</span> Not configured. Add <code>TELEGRAM_BOT_TOKEN</code> and <code>TELEGRAM_CHAT_ID</code> to <code>.env</code>.';
+        } else if (s.disabled) {
+          el.innerHTML = '<span style="color:#f0883e">●</span> Configured but disabled (<code>TELEGRAM_DISABLED=1</code>).';
+        } else {
+          el.innerHTML = `<span style="color:#3ddc84">●</span> Configured · chat <code>${escapeHtml(s.chat_id)}</code> · token …${escapeHtml(s.token_tail.slice(-4))} · <b>${s.sent_total}</b> jobs sent so far.`;
+        }
+      } catch (err) {
+        el.innerHTML = '<span style="color:#f04e4e">●</span> Status check failed: ' + escapeHtml(err.message);
+      }
+    }
+
+    $("tgRefreshBtn").addEventListener("click", refreshTelegramStatus);
+    $("tgTestBtn").addEventListener("click", async () => {
+      const btn = $("tgTestBtn");
+      btn.disabled = true; const orig = btn.textContent; btn.textContent = "Sending…";
+      try {
+        const res = await fetch("/api/telegram/test", { method: "POST" });
+        const j = await res.json();
+        if (!j.ok) throw new Error(j.error || ("HTTP " + res.status));
+        $("tgStatus").innerHTML = '<span style="color:#3ddc84">●</span> Test message sent — check Telegram.';
+      } catch (err) {
+        $("tgStatus").innerHTML = '<span style="color:#f04e4e">●</span> Test failed: ' + escapeHtml(err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = orig;
+      }
+    });
+
+    $("settings").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        await saveConfig();
+        setSaveStatus("Saved. Applies on next run.", "ok");
+      } catch (err) {
+        setSaveStatus("Save failed: " + err.message, "err");
+      }
+    });
+
+    $("saveRunBtn").addEventListener("click", async () => {
+      try {
+        await saveConfig();
+        setSaveStatus("Saved. Running scrape\u2026", "ok");
+        const res = await fetch("/api/run", { method: "POST" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        setSaveStatus("Scrape started \u2014 results appear shortly.", "ok");
+      } catch (err) {
+        setSaveStatus("Run failed: " + err.message, "err");
+      }
+    });
+
+    function populateFilterOptions() {
+      const setOpts = (id, values, placeholder) => {
+        const sel = $(id);
+        const current = sel.value;
+        sel.innerHTML = `<option value="">${placeholder}</option>` +
+          values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+        if (values.includes(current)) sel.value = current;
+      };
+      const companies = [...new Set(allJobs.map(j => j.company).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+      const locations = [...new Set(allJobs.map(j => j.location).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+      setOpts("companyFilter", companies, "All companies");
+      setOpts("locationFilter", locations, "All locations");
+    }
+
+    loadFromURL();
+    $("filter").addEventListener("input", render);
+    $("priorityOnly").addEventListener("change", render);
+    $("savedOnly").addEventListener("change", render);
+    $("showHidden").addEventListener("change", render);
+    $("companyFilter").addEventListener("change", render);
+    $("locationFilter").addEventListener("change", render);
+    $("postedFilter").addEventListener("change", render);
+    $("sortBy").addEventListener("change", render);
+
+    function clearAllFilters() {
+      $("filter").value = "";
+      $("priorityOnly").checked = false;
+      $("savedOnly").checked = false;
+      $("showHidden").checked = false;
+      $("companyFilter").value = "";
+      $("locationFilter").value = "";
+      $("postedFilter").value = "";
+      $("sortBy").value = "default";
+      render();
+    }
+    $("clearFilters").addEventListener("click", clearAllFilters);
+    $("emptyClear").addEventListener("click", clearAllFilters);
+
+    // Row click / action buttons
+    $("rows").addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-action]");
+      const tr = e.target.closest("tr");
+      if (!tr) return;
+      const key = tr.dataset.key;
+      if (btn) {
+        e.stopPropagation();
+        if (btn.dataset.action === "save") {
+          if (savedSet.has(key)) savedSet.delete(key); else savedSet.add(key);
+          saveSet(LS_SAVED, savedSet);
+        } else if (btn.dataset.action === "hide") {
+          if (hiddenSet.has(key)) hiddenSet.delete(key); else hiddenSet.add(key);
+          saveSet(LS_HIDDEN, hiddenSet);
+        }
+        render();
+        return;
+      }
+      // Ignore clicks on links / interactive text
+      if (e.target.closest("a")) return;
+      const url = tr.dataset.url;
+      if (url) window.open(url, "_blank", "noopener");
+    });
+
+    // Sidebar open/close (mobile)
+    const openSidebar = () => document.body.classList.add("sidebar-open");
+    const closeSidebar = () => document.body.classList.remove("sidebar-open");
+    $("sidebarToggle").addEventListener("click", openSidebar);
+    $("sidebarClose").addEventListener("click", closeSidebar);
+    $("backdrop").addEventListener("click", closeSidebar);
+
+    // Keyboard shortcuts: '/' focuses search, Esc clears search when focused
+    document.addEventListener("keydown", (e) => {
+      const tag = (document.activeElement && document.activeElement.tagName) || "";
+      const typing = /INPUT|TEXTAREA|SELECT/.test(tag);
+      if (e.key === "/" && !typing) {
+        e.preventDefault();
+        $("filter").focus();
+        $("filter").select();
+      } else if (e.key === "Escape") {
+        if (document.body.classList.contains("sidebar-open")) { closeSidebar(); return; }
+        if (document.activeElement === $("filter")) { $("filter").value = ""; render(); }
+      }
+    });
+    loadConfig();
+    load();
+    setInterval(load, REFRESH_MS);
+  </script>
+</body>
+</html>

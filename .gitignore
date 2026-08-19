@@ -1,0 +1,19 @@
+/venv/
+/.venv/
+/.idea
+**/__pycache__/
+**/.pytest_cache/
+/.ipynb_checkpoints/
+**/output/
+**/.DS_Store
+*.pyc
+.env
+
+# runtime / state
+web/telegram_sent.json
+web/first_seen.json
+web/data.json
+scrape.log
+server.out
+ngrok.out
+*.csv
