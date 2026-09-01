@@ -94,43 +94,31 @@ def status() -> dict:
 # --------------------------------------------------------------------------- #
 # Dedupe state
 # --------------------------------------------------------------------------- #
+# Note: dedupe state now lives in web/jobs.db (see db.py). These shims stay
+# for legacy callers (status endpoint, send_run_notification tests).
 def _load_sent() -> dict:
     try:
-        with open(STATE_FILE, encoding="utf-8") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            return data
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    return {}
+        import db as _db
+        return {u: "" for u in _db.sent_urls_set()}
+    except Exception:
+        return {}
 
 
-def _save_sent(sent: dict) -> None:
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    tmp = STATE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(sent, fh, ensure_ascii=False, indent=2)
-    os.replace(tmp, STATE_FILE)
+def _save_sent(_sent: dict) -> None:
+    # No-op: DB persists via db.mark_sent() in delivery.py
+    return None
 
 
 def _prune(sent: dict) -> dict:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=DEDUPE_KEEP_DAYS)
-    pruned = {}
-    for key, iso in sent.items():
-        try:
-            when = datetime.fromisoformat(iso)
-            if when.tzinfo is None:
-                when = when.replace(tzinfo=timezone.utc)
-            if when >= cutoff:
-                pruned[key] = iso
-        except (TypeError, ValueError):
-            # Keep unparseable entries -- safer than dropping.
-            pruned[key] = iso
-    return pruned
+    return sent  # DB is pruned by db.prune() on a schedule
 
 
 def _sent_count() -> int:
-    return len(_load_sent())
+    try:
+        import db as _db
+        return _db.stats()["sent"]
+    except Exception:
+        return 0
 
 
 def _job_key(job: dict) -> str:

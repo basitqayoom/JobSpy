@@ -108,35 +108,60 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def _serve_aggregated_data(self):
-        """Merge all web/state/<profile>/data.json into one payload."""
-        root = os.path.join(WEB_DIR, "state")
-        merged_jobs = []
-        profiles = []
-        latest_ts = ""
+        """Read jobs from SQLite (source of truth) and merge with profile metadata."""
         try:
-            if os.path.isdir(root):
-                for profile in sorted(os.listdir(root)):
-                    p_data = os.path.join(root, profile, "data.json")
-                    if not os.path.exists(p_data):
+            import db as _db
+            profile_root = os.path.join(WEB_DIR, "profiles")
+            profile_meta = {}
+            latest_ts = ""
+            if os.path.isdir(profile_root):
+                for fname in sorted(os.listdir(profile_root)):
+                    if not fname.endswith(".json"):
                         continue
-                    with open(p_data, encoding="utf-8") as fh:
-                        d = json.load(fh)
-                    profiles.append({
-                        "profile": profile,
-                        "flag": d.get("flag", ""),
-                        "display_name": d.get("display_name", profile),
-                        "location": d.get("location", ""),
-                        "count": d.get("count", 0),
-                        "generated_at": d.get("generated_at", ""),
-                    })
-                    for j in d.get("jobs", []):
-                        j2 = dict(j)
-                        j2.setdefault("profile", profile)
-                        j2.setdefault("flag", d.get("flag", ""))
-                        j2.setdefault("display_name", d.get("display_name", profile))
-                        merged_jobs.append(j2)
-                    if d.get("generated_at", "") > latest_ts:
-                        latest_ts = d["generated_at"]
+                    with open(os.path.join(profile_root, fname), encoding="utf-8") as fh:
+                        cfg = json.load(fh)
+                    profile_meta[fname[:-5]] = cfg
+
+            counts = _db.counts_by_profile()
+            profiles = []
+            for p, meta in profile_meta.items():
+                c = counts.get(p, {})
+                # Use latest_seen or generated file if available for freshness
+                state_data = os.path.join(WEB_DIR, "state", p, "data.json")
+                gen = ""
+                if os.path.exists(state_data):
+                    try:
+                        with open(state_data, encoding="utf-8") as fh:
+                            gen = json.load(fh).get("generated_at", "")
+                    except Exception:
+                        pass
+                if gen > latest_ts:
+                    latest_ts = gen
+                profiles.append({
+                    "profile": p,
+                    "flag": meta.get("flag", ""),
+                    "display_name": meta.get("display_name", p),
+                    "location": meta.get("location", ""),
+                    "count": c.get("total", 0),
+                    "generated_at": gen,
+                })
+
+            merged_jobs = []
+            for r in _db.list_jobs(order_by="first_seen_at", desc=True):
+                p = r["profile"]
+                meta = profile_meta.get(p, {})
+                merged_jobs.append({
+                    "title": r["title"],
+                    "company": r["company"],
+                    "location": r["location"],
+                    "date_posted": r["date_posted"],
+                    "job_url": r["url"],
+                    "is_priority": bool(r["is_priority"]),
+                    "first_seen_at": r["first_seen_at"],
+                    "profile": p,
+                    "flag": meta.get("flag", ""),
+                    "display_name": meta.get("display_name", p),
+                })
         except Exception as exc:  # noqa: BLE001
             self._send_json(500, {"ok": False, "error": str(exc)})
             return

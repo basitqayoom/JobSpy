@@ -30,6 +30,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+import db
 import notify_telegram as N
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -66,23 +67,18 @@ def _profile_meta(profile: str) -> dict:
 
 
 def _profile_jobs(profile: str) -> list[dict]:
-    d = _load_json(os.path.join(STATE_ROOT, profile, "data.json"))
-    return d.get("jobs", []) if isinstance(d, dict) else []
+    return [db.row_to_job_dict(r) for r in db.list_jobs(profile=profile)]
 
 
 def _all_jobs(region: str | None = None) -> list[dict]:
-    profiles = [region] if region else _list_profiles()
+    rows = db.list_jobs(profile=region) if region else db.list_jobs()
     out: list[dict] = []
-    for p in profiles:
-        if not os.path.exists(os.path.join(PROFILES_DIR, f"{p}.json")):
-            continue
-        meta = _profile_meta(p)
-        for j in _profile_jobs(p):
-            row = dict(j)
-            row.setdefault("profile", p)
-            row.setdefault("flag", meta.get("flag", ""))
-            row.setdefault("display_name", meta.get("display_name", p))
-            out.append(row)
+    for r in rows:
+        j = db.row_to_job_dict(r)
+        meta = _profile_meta(j["profile"])
+        j["flag"] = meta.get("flag", "")
+        j["display_name"] = meta.get("display_name", j["profile"])
+        out.append(j)
     return out
 
 

@@ -14,6 +14,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
+import db
 from jobspy import scrape_jobs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -78,9 +79,6 @@ def scrape_profile(profile_name: str) -> dict:
     state_dir = os.path.join(STATE_ROOT, profile_name)
     os.makedirs(state_dir, exist_ok=True)
     data_path = os.path.join(state_dir, "data.json")
-    first_seen_path = os.path.join(state_dir, "first_seen.json")
-    pending_pri_path = os.path.join(state_dir, "pending_priority.json")
-    pending_oth_path = os.path.join(state_dir, "pending_other.json")
     csv_path = os.path.join(state_dir, "latest.csv")
 
     display = f"{cfg.get('flag','')} {cfg.get('display_name', profile_name)}"
@@ -115,20 +113,15 @@ def scrape_profile(profile_name: str) -> dict:
                 "profile": profile_name,
             })
 
-        # First-seen tracking
-        first_seen = _prune_by_iso(_load_json(first_seen_path))
-        now_iso = datetime.now(timezone.utc).astimezone().isoformat()
-        for r in rows:
-            key = r.get("job_url") or f"{r['company']}|{r['title']}|{r['location']}"
-            if key not in first_seen:
-                first_seen[key] = now_iso
-            r["first_seen_at"] = first_seen[key]
-        _save_json(first_seen_path, first_seen)
-
         jobs = jobs.drop(columns="_rank")
         jobs.to_csv(csv_path, quoting=csv.QUOTE_NONNUMERIC, escapechar="\\", index=False)
 
-    # Persist snapshot for the dashboard
+    # Persist to SQLite (source of truth).
+    inserted, updated = db.upsert_jobs(profile_name, rows)
+
+    # Fetch back with canonical first_seen_at for dashboard snapshot.
+    db_rows = db.list_jobs(profile=profile_name, order_by="first_seen_at", desc=True)
+    snapshot_jobs = [db.row_to_job_dict(r) for r in db_rows]
     _save_json(data_path, {
         "generated_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "profile": profile_name,
@@ -136,38 +129,22 @@ def scrape_profile(profile_name: str) -> dict:
         "display_name": cfg.get("display_name", profile_name),
         "search_term": cfg["search_term"],
         "location": cfg["location"],
-        "count": len(rows),
-        "jobs": rows,
+        "count": len(snapshot_jobs),
+        "jobs": snapshot_jobs,
     })
 
-    # Merge into pending queues (dedupe by job_url).
-    def _merge(path: str, entries: list[dict]) -> int:
-        pending = _prune_by_iso(_load_json(path), iso_getter=lambda v: v.get("first_seen_at") if isinstance(v, dict) else v)
-        for r in entries:
-            url = r.get("job_url")
-            if not url:
-                continue
-            existing = pending.get(url, {})
-            merged = dict(existing)
-            merged.update(r)
-            if existing.get("first_seen_at"):
-                merged["first_seen_at"] = existing["first_seen_at"]
-            pending[url] = merged
-        _save_json(path, pending)
-        return len(pending)
-
-    pri_rows = [r for r in rows if r["is_priority"]]
-    oth_rows = [r for r in rows if not r["is_priority"]]
-    n_pri = _merge(pending_pri_path, pri_rows)
-    n_oth = _merge(pending_oth_path, oth_rows)
-    print(f"[{profile_name}] pending queues: priority={n_pri}  other={n_oth}")
+    # Pending counts (unsent) from DB
+    unsent = db.list_jobs(profile=profile_name, sent=False)
+    n_pri = sum(1 for r in unsent if r["is_priority"])
+    n_oth = len(unsent) - n_pri
+    print(f"[{profile_name}] db: inserted={inserted} updated={updated}  pending: priority={n_pri}  other={n_oth}")
 
     return {
         "profile": profile_name,
         "display": display,
         "scraped": len(rows),
-        "priority_new": len(pri_rows),
-        "other_new": len(oth_rows),
+        "inserted": inserted,
+        "updated": updated,
         "pending_priority": n_pri,
         "pending_other": n_oth,
     }

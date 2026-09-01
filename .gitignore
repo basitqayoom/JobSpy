@@ -15,6 +15,9 @@ web/first_seen.json
 web/data.json
 web/pending_jobs.json
 web/state/
+web/jobs.db
+web/jobs.db-shm
+web/jobs.db-wal
 audit.log
 scrape.log
 server.out
