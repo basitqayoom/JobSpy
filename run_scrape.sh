@@ -31,8 +31,8 @@ run_profile() {
   {
     echo "===== $(date '+%Y-%m-%d %H:%M:%S %z') :: scrape :: $profile ===="
     "$PYTHON" scrape.py "$profile" || echo "scrape failed for $profile: $?"
-    echo "===== $(date '+%Y-%m-%d %H:%M:%S %z') :: priority-flush :: $profile ===="
-    "$PYTHON" delivery.py priority || echo "delivery.priority failed: $?"
+    echo "===== $(date '+%Y-%m-%d %H:%M:%S %z') :: flush :: $profile ===="
+    "$PYTHON" delivery.py flush "$profile" || echo "delivery flush failed: $?"
     echo
   } >> "$LOG_FILE" 2>&1
 }

@@ -47,13 +47,39 @@ CREATE TABLE IF NOT EXISTS jobs (
     is_priority    INTEGER NOT NULL DEFAULT 0,
     first_seen_at  TEXT NOT NULL,
     last_seen_at   TEXT NOT NULL,
-    sent_at        TEXT
+    sent_at        TEXT,
+    applied_at     TEXT,
+    saved_at       TEXT,
+    hidden_at      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_profile      ON jobs(profile);
 CREATE INDEX IF NOT EXISTS idx_jobs_first_seen   ON jobs(first_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_company      ON jobs(company);
 CREATE INDEX IF NOT EXISTS idx_jobs_is_priority  ON jobs(is_priority);
 CREATE INDEX IF NOT EXISTS idx_jobs_sent_at      ON jobs(sent_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_applied      ON jobs(applied_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_saved        ON jobs(saved_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_hidden       ON jobs(hidden_at);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(
+    url UNINDEXED, title, company, location,
+    content='jobs', content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS jobs_ai AFTER INSERT ON jobs BEGIN
+    INSERT INTO jobs_fts(rowid, url, title, company, location)
+    VALUES (new.rowid, new.url, new.title, new.company, new.location);
+END;
+CREATE TRIGGER IF NOT EXISTS jobs_ad AFTER DELETE ON jobs BEGIN
+    INSERT INTO jobs_fts(jobs_fts, rowid, url, title, company, location)
+    VALUES ('delete', old.rowid, old.url, old.title, old.company, old.location);
+END;
+CREATE TRIGGER IF NOT EXISTS jobs_au AFTER UPDATE ON jobs BEGIN
+    INSERT INTO jobs_fts(jobs_fts, rowid, url, title, company, location)
+    VALUES ('delete', old.rowid, old.url, old.title, old.company, old.location);
+    INSERT INTO jobs_fts(rowid, url, title, company, location)
+    VALUES (new.rowid, new.url, new.title, new.company, new.location);
+END;
 
 CREATE TABLE IF NOT EXISTS meta (
     key    TEXT PRIMARY KEY,
@@ -237,3 +263,95 @@ def row_to_job_dict(r: dict) -> dict:
         "first_seen_at": r.get("first_seen_at"),
         "profile": r.get("profile"),
     }
+
+
+def set_flag(url: str, column: str, on: bool) -> bool:
+    """Toggle applied_at / saved_at / hidden_at atomically."""
+    if column not in {"applied_at", "saved_at", "hidden_at"}:
+        raise ValueError(f"invalid column: {column}")
+    now = datetime.now(timezone.utc).astimezone().isoformat() if on else None
+    with tx() as conn:
+        cur = conn.execute(f"UPDATE jobs SET {column} = ? WHERE url = ?", (now, url))
+        return cur.rowcount > 0
+
+
+def search(*, q: str = "", profile: str = "", region_group: str = "",
+           company: str = "", priority: bool | None = None,
+           applied: bool | None = None, saved: bool | None = None,
+           hidden: bool | None = None, posted_within_hours: int | None = None,
+           order: str = "first_seen_at", desc: bool = True,
+           limit: int = 100, offset: int = 0) -> tuple[list[dict], int]:
+    """Filtered paginated search. Returns (rows, total_matching).
+
+    - q: full-text over title/company/location (FTS5, MATCH). Empty = no filter.
+    - region_group: 'india' or 'global' shortcut.
+    - profile: exact profile match.
+    - Booleans: filter by presence/absence of *_at.
+    """
+    where = ["1=1"]
+    args: list = []
+    joins = ""
+
+    if q:
+        # FTS5 MATCH; escape quotes and wrap loose tokens with prefix search.
+        clean = " ".join(t + "*" for t in q.replace('"', ' ').split() if t)
+        joins = "JOIN jobs_fts ON jobs_fts.rowid = jobs.rowid"
+        where.append("jobs_fts MATCH ?"); args.append(clean)
+
+    if profile:
+        where.append("jobs.profile = ?"); args.append(profile)
+
+    if region_group == "india":
+        where.append("jobs.profile = 'india'")
+    elif region_group == "global":
+        where.append("jobs.profile != 'india'")
+
+    if company:
+        where.append("LOWER(jobs.company) LIKE ?"); args.append(f"%{company.lower()}%")
+
+    if priority is True:
+        where.append("jobs.is_priority = 1")
+    elif priority is False:
+        where.append("jobs.is_priority = 0")
+
+    for col, flag in (("applied_at", applied), ("saved_at", saved), ("hidden_at", hidden)):
+        if flag is True:
+            where.append(f"jobs.{col} IS NOT NULL")
+        elif flag is False:
+            where.append(f"jobs.{col} IS NULL")
+
+    if posted_within_hours:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=posted_within_hours)).isoformat()
+        where.append("jobs.first_seen_at >= ?"); args.append(cutoff)
+
+    order_col = {
+        "first_seen_at": "jobs.first_seen_at",
+        "date_posted":   "jobs.date_posted",
+        "company":       "jobs.company",
+        "is_priority":   "jobs.is_priority",
+    }.get(order, "jobs.first_seen_at")
+    direction = "DESC" if desc else "ASC"
+
+    where_sql = " AND ".join(where)
+    count_sql = f"SELECT COUNT(*) FROM jobs {joins} WHERE {where_sql}"
+    data_sql  = (f"SELECT jobs.* FROM jobs {joins} WHERE {where_sql} "
+                 f"ORDER BY jobs.is_priority DESC, {order_col} {direction} "
+                 f"LIMIT ? OFFSET ?")
+
+    with _lock:
+        conn = _connect()
+        total = conn.execute(count_sql, args).fetchone()[0]
+        rows = _rows_to_dicts(conn.execute(data_sql, args + [limit, offset]).fetchall())
+    return rows, total
+
+
+def distinct_companies(*, profile: str = "", limit: int = 500) -> list[str]:
+    q = "SELECT DISTINCT company FROM jobs"
+    args: list = []
+    if profile:
+        q += " WHERE profile = ?"
+        args.append(profile)
+    q += " ORDER BY company"
+    with _lock:
+        conn = _connect()
+        return [r[0] for r in conn.execute(q, args).fetchall() if r[0]][:limit]

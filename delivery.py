@@ -1,15 +1,14 @@
-"""Delivery workers for multi-profile Telegram notifications.
+"""Per-tick, per-profile Telegram delivery to region-specific feed bots.
 
-- flush_priority(): drains web/state/<profile>/pending_priority.json across ALL
-  profiles into one combined message (India first, then by count).
-- flush_other():    same, but for pending_other.json. Silent.
+- flush_profile(profile): drains ALL unsent jobs (priority + other) for that
+  profile into ONE message posted to the correct feed bot:
+    india          -> TELEGRAM_INDIA_BOT_TOKEN / TELEGRAM_INDIA_CHAT_ID
+    everything else-> TELEGRAM_GLOBAL_BOT_TOKEN / TELEGRAM_GLOBAL_CHAT_ID
 
-Both are idempotent: dedupe via notify_telegram.telegram_sent.json, and only
-remove from pending after successful send.
+  Priority section first, then Other section.
 
-Invoke:  python delivery.py priority
-         python delivery.py other
-         python delivery.py overnight   (audible combined flush)
+Invoke:
+  python delivery.py flush <profile>
 """
 from __future__ import annotations
 
@@ -25,278 +24,160 @@ import notify_telegram as N
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(HERE, "web")
 PROFILES_DIR = os.path.join(WEB_DIR, "profiles")
-STATE_ROOT = os.path.join(WEB_DIR, "state")
 
-SEND_DELAY_S = 0.4
 MAX_MSG_CHARS = 3800
+SEND_DELAY_S  = 0.4
+MAX_OTHER_PER_MESSAGE = 20  # cap OTHER section per profile per tick (rest in expandable)
 
 
-def _load_json(path: str) -> dict:
+def _load_meta(profile: str) -> dict:
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, dict) else {}
+        with open(os.path.join(PROFILES_DIR, f"{profile}.json"), encoding="utf-8") as fh:
+            return json.load(fh)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 
-def _save_json(path: str, data: dict) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=2, default=str)
-    os.replace(tmp, path)
+def _fmt_priority_card(job: dict) -> str:
+    return f"<blockquote>{N._format_job_card_body(job, 0, priority=True)}</blockquote>"
 
 
-def _list_profiles() -> list[str]:
-    if not os.path.isdir(PROFILES_DIR):
-        return []
-    return sorted(f[:-5] for f in os.listdir(PROFILES_DIR) if f.endswith(".json"))
+def _fmt_other_card(job: dict) -> str:
+    return f"<blockquote>{N._format_job_card_body(job, 0, priority=False)}</blockquote>"
 
 
-def _load_profile_meta(profile: str) -> dict:
-    return _load_json(os.path.join(PROFILES_DIR, f"{profile}.json"))
-
-
-def _ordered_profiles(profiles_with_hits: dict[str, list]) -> list[str]:
-    """India first, then remaining by count desc, then alpha."""
-    keys = list(profiles_with_hits.keys())
-    india = ["india"] if "india" in keys else []
-    others = [k for k in keys if k != "india"]
-    others.sort(key=lambda k: (-len(profiles_with_hits[k]), k))
-    return india + others
-
-
-def _drain_pending(bucket: str) -> dict[str, list[dict]]:
-    """Return {profile: [jobs]} for jobs in <bucket> (priority/other) that haven't been sent."""
-    is_pri = True if bucket == "priority" else False
-    rows_by_profile = db.pending_by_profile(priority=is_pri)
-    return {p: [db.row_to_job_dict(r) for r in rows] for p, rows in rows_by_profile.items()}
-
-
-def _mark_sent_and_clear(bucket: str, jobs_by_profile: dict[str, list[dict]]) -> None:
-    urls = [j.get("job_url") for jobs in jobs_by_profile.values() for j in jobs if j.get("job_url")]
-    if urls:
-        db.mark_sent(urls)
-
-
-# --------------------------------------------------------------------------- #
-# Message builders
-# --------------------------------------------------------------------------- #
-def _build_priority_message(jobs_by_profile: dict[str, list[dict]], dashboard: str) -> list[str]:
-    total = sum(len(v) for v in jobs_by_profile.values())
+def _build_message(profile: str, priority_rows: list[dict], other_rows: list[dict]) -> list[str]:
+    meta = _load_meta(profile)
+    flag = meta.get("flag", "")
+    display = meta.get("display_name", profile)
     now = datetime.now().strftime("%d %b %H:%M")
+    dashboard = N._config().get("dashboard", "")
 
-    header = [
-        f"🔔 <b>{total} new priority job{'s' if total != 1 else ''}</b>",
+    n_pri = len(priority_rows)
+    n_oth = len(other_rows)
+
+    header_lines = [
+        f"{flag} <b>{N._esc(display)}</b>  ·  {n_pri + n_oth} new",
         f"<i>{N._esc(now)}</i>",
         "",
     ]
 
-    body_lines: list[str] = []
-    for profile in _ordered_profiles(jobs_by_profile):
-        meta = _load_profile_meta(profile)
-        flag = meta.get("flag", "")
-        display = meta.get("display_name", profile)
-        jobs = jobs_by_profile[profile]
-        body_lines.append("─" * 14)
-        body_lines.append(f"{flag} <b>{N._esc(display)}</b>  ·  {len(jobs)}")
-        body_lines.append("")
-        for j in jobs:
-            body_lines.append(N.format_job_card(j, 0, priority=True))
+    messages: list[str] = []
+    current = list(header_lines)
+    current_len = sum(len(x) + 1 for x in current)
 
-    footer = [
-        "",
-        "─" * 14,
-        f'📊 <a href="{N._esc(dashboard)}">Open dashboard</a>' if dashboard else "",
-    ]
-    return _chunk(header + body_lines + footer)
+    def flush():
+        nonlocal current, current_len
+        if current and any(x.strip() for x in current):
+            messages.append("\n".join(current).rstrip())
+        current = []
+        current_len = 0
 
-
-def _build_other_message(jobs_by_profile: dict[str, list[dict]], dashboard: str, *, window_label: str) -> list[str]:
-    total = sum(len(v) for v in jobs_by_profile.values())
-    now = datetime.now().strftime("%H:%M")
-
-    # Summary chips (India first, then by count)
-    ordered = _ordered_profiles(jobs_by_profile)
-    chips = []
-    for p in ordered:
-        meta = _load_profile_meta(p)
-        chips.append(f"{meta.get('flag','')} {N._esc(meta.get('display_name', p))} ({len(jobs_by_profile[p])})")
-
-    header = [
-        f"🕐 <b>{window_label}</b>  ·  {total} new job{'s' if total != 1 else ''}  ·  <i>silent</i>",
-        "  ".join(chips),
-        "",
-    ]
-
-    body_lines: list[str] = []
-    for profile in ordered:
-        meta = _load_profile_meta(profile)
-        flag = meta.get("flag", "")
-        display = meta.get("display_name", profile)
-        jobs = jobs_by_profile[profile]
-        body_lines.append("─" * 14)
-        body_lines.append(f"{flag} <b>{N._esc(display)}</b>  ·  {len(jobs)}")
-        body_lines.append("")
-        visible = jobs[:3]
-        hidden = jobs[3:]
-        for j in visible:
-            body_lines.append(N.format_job_card(j, 0, priority=False))
-        if hidden:
-            # Split expandable body into blocks that each fit safely in one message.
-            # Approx: ~150 chars per card avg, so ~20 cards per blockquote.
-            CHUNK = 20
-            for i in range(0, len(hidden), CHUNK):
-                slice_ = hidden[i:i + CHUNK]
-                expand_body = "\n\n".join(
-                    N._format_job_card_body(j, 0, priority=False) for j in slice_
-                )
-                remaining = len(hidden) - i - len(slice_)
-                label = f"👇 <b>+{len(slice_)} more</b>" if i == 0 else f"👇 <b>{len(slice_)} more</b>"
-                if remaining:
-                    label += f" ({remaining} still hidden)"
-                body_lines.append(f"<blockquote expandable>{label}\n\n{expand_body}</blockquote>")
-
-    footer = [
-        "",
-        "─" * 14,
-        f'📊 <a href="{N._esc(dashboard)}">Open dashboard</a>' if dashboard else "",
-    ]
-    return _chunk(header + body_lines + footer)
-
-
-def _chunk(lines: list[str]) -> list[str]:
-    """Concatenate lines into Telegram-sized chunks (<=3800 chars).
-
-    Any single line already longer than MAX_MSG_CHARS gets emitted on its own
-    (Telegram may still reject it, but that beats a silent overflow).
-    """
-    msgs: list[str] = []
-    cur: list[str] = []
-    cur_len = 0
-    for line in lines:
+    def emit(line: str):
+        nonlocal current_len
         add = len(line) + 1
-        # Line itself is too big -> flush current chunk and put oversized line alone.
-        if len(line) > MAX_MSG_CHARS:
-            if cur:
-                msgs.append("\n".join(cur).rstrip())
-                cur, cur_len = [], 0
-            msgs.append(line)
-            continue
-        if cur_len + add > MAX_MSG_CHARS and cur:
-            msgs.append("\n".join(cur).rstrip())
-            cur, cur_len = [], 0
-        cur.append(line)
-        cur_len += add
-    if cur:
-        msgs.append("\n".join(cur).rstrip())
-    return msgs
+        if current_len + add > MAX_MSG_CHARS:
+            flush()
+        current.append(line)
+        current_len += add
+
+    if priority_rows:
+        emit("─" * 14)
+        emit(f"⭐ <b>PRIORITY</b>  ·  {n_pri}")
+        emit("")
+        for j in priority_rows:
+            card = _fmt_priority_card(j)
+            if current_len + len(card) + 1 > MAX_MSG_CHARS:
+                flush()
+                current = [f"{flag} <b>{N._esc(display)}</b> (continued)", ""]
+                current_len = sum(len(x) + 1 for x in current)
+            emit(card)
+
+    if other_rows:
+        emit("")
+        emit("─" * 14)
+        emit(f"🆕 <b>OTHER</b>  ·  {n_oth}")
+        emit("")
+        visible = other_rows[:3]
+        hidden = other_rows[3:MAX_OTHER_PER_MESSAGE]
+        overflow = other_rows[MAX_OTHER_PER_MESSAGE:]
+        for j in visible:
+            card = _fmt_other_card(j)
+            if current_len + len(card) + 1 > MAX_MSG_CHARS:
+                flush()
+                current = [f"{flag} <b>{N._esc(display)}</b> (continued)", ""]
+                current_len = sum(len(x) + 1 for x in current)
+            emit(card)
+        if hidden:
+            expand_body = "\n\n".join(N._format_job_card_body(j, 0, priority=False) for j in hidden)
+            block = f"<blockquote expandable>👇 <b>+{len(hidden)} more</b>\n\n{expand_body}</blockquote>"
+            if len(block) > MAX_MSG_CHARS:
+                # split into halves
+                mid = len(hidden) // 2
+                b1 = "\n\n".join(N._format_job_card_body(j, 0, priority=False) for j in hidden[:mid])
+                b2 = "\n\n".join(N._format_job_card_body(j, 0, priority=False) for j in hidden[mid:])
+                for b, n in [(b1, mid), (b2, len(hidden) - mid)]:
+                    part = f"<blockquote expandable>👇 <b>+{n} more</b>\n\n{b}</blockquote>"
+                    if current_len + len(part) + 1 > MAX_MSG_CHARS:
+                        flush(); current = [f"{flag} <b>{N._esc(display)}</b> (continued)", ""]; current_len = sum(len(x)+1 for x in current)
+                    emit(part)
+            else:
+                if current_len + len(block) + 1 > MAX_MSG_CHARS:
+                    flush(); current = [f"{flag} <b>{N._esc(display)}</b> (continued)", ""]; current_len = sum(len(x)+1 for x in current)
+                emit(block)
+        if overflow:
+            emit(f"<i>… +{len(overflow)} more on the dashboard</i>")
+
+    if dashboard:
+        emit("")
+        emit("─" * 14)
+        emit(f'📊 <a href="{N._esc(dashboard)}">Dashboard</a>')
+
+    flush()
+    return messages
 
 
-def _send(messages: list[str], *, silent: bool) -> bool:
+def flush_profile(profile: str) -> dict:
+    N.load_env()
+    token, chat_id = N.feed_bot(profile)
+    if not token or not chat_id:
+        return {"sent": False, "reason": f"feed bot not configured for {profile}"}
+
+    unsent = db.list_jobs(profile=profile, sent=False)
+    if not unsent:
+        return {"sent": False, "reason": "nothing-new", "profile": profile}
+
+    priority_rows = [db.row_to_job_dict(r) for r in unsent if r["is_priority"]]
+    other_rows    = [db.row_to_job_dict(r) for r in unsent if not r["is_priority"]]
+
+    messages = _build_message(profile, priority_rows, other_rows)
+    urls = [r["url"] for r in unsent]
+
+    ok = True
     for i, m in enumerate(messages):
         try:
-            N.send_message(m, silent=silent or (i > 0))
+            N.send_via(token, chat_id, m, silent=(i > 0))
         except Exception as exc:
-            print(f"ERROR sending message {i+1}/{len(messages)}: {exc}")
-            return False
+            print(f"ERROR send {i+1}/{len(messages)} for {profile}: {exc}")
+            ok = False
+            break
         time.sleep(SEND_DELAY_S)
-    return True
 
-
-# --------------------------------------------------------------------------- #
-# Public entry points
-# --------------------------------------------------------------------------- #
-def flush_priority() -> dict:
-    N.load_env()
-    if not N.is_configured():
-        return {"sent": False, "reason": "not-configured"}
-
-    jobs = _drain_pending("priority")
-    total = sum(len(v) for v in jobs.values())
-    if total == 0:
-        return {"sent": False, "reason": "nothing-new", "total": 0}
-
-    dashboard = N._config().get("dashboard", "")
-    msgs = _build_priority_message(jobs, dashboard)
-    ok = _send(msgs, silent=False)
     if ok:
-        _mark_sent_and_clear("priority", jobs)
-    return {"sent": ok, "total": total, "profiles": {p: len(v) for p, v in jobs.items()}, "messages": len(msgs)}
-
-
-def flush_other(window_label: str = "Hourly digest") -> dict:
-    N.load_env()
-    if not N.is_configured():
-        return {"sent": False, "reason": "not-configured"}
-
-    jobs = _drain_pending("other")
-    total = sum(len(v) for v in jobs.values())
-    if total == 0:
-        return {"sent": False, "reason": "nothing-new", "total": 0}
-
-    dashboard = N._config().get("dashboard", "")
-    msgs = _build_other_message(jobs, dashboard, window_label=window_label)
-    ok = _send(msgs, silent=True)
-    if ok:
-        _mark_sent_and_clear("other", jobs)
-    return {"sent": ok, "total": total, "profiles": {p: len(v) for p, v in jobs.items()}, "messages": len(msgs)}
-
-
-def flush_overnight() -> dict:
-    """Audible combined dump of both buckets (used at 08:00 IST after quiet hours)."""
-    N.load_env()
-    if not N.is_configured():
-        return {"sent": False, "reason": "not-configured"}
-
-    pri = _drain_pending("priority")
-    oth = _drain_pending("other")
-    total = sum(len(v) for v in pri.values()) + sum(len(v) for v in oth.values())
-    if total == 0:
-        return {"sent": False, "reason": "nothing-new", "total": 0}
-
-    dashboard = N._config().get("dashboard", "")
-
-    # Priority first (audible), then other (silent same message queue)
-    all_msgs: list[str] = []
-    if any(pri.values()):
-        all_msgs += _build_priority_message(pri, dashboard)
-    if any(oth.values()):
-        all_msgs += _build_other_message(oth, dashboard, window_label="Overnight digest")
-
-    ok = _send(all_msgs, silent=False)
-    if ok:
-        if pri: _mark_sent_and_clear("priority", pri)
-        if oth: _mark_sent_and_clear("other", oth)
-    return {"sent": ok, "total": total, "messages": len(all_msgs)}
-
-
-def _in_quiet_hours(now: datetime) -> bool:
-    """23:00-08:00 IST (UTC+5:30). Holds priority pings; overnight digest at 08:00 flushes."""
-    # Convert to IST-ish (UTC+5:30) without pytz
-    from datetime import timedelta
-    ist = now.astimezone(timezone(timedelta(hours=5, minutes=30)))
-    h = ist.hour
-    return h >= 23 or h < 8
+        db.mark_sent(urls)
+    return {
+        "sent": ok,
+        "profile": profile,
+        "priority": len(priority_rows),
+        "other": len(other_rows),
+        "messages": len(messages),
+    }
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        raise SystemExit("Usage: python delivery.py priority|other|overnight")
-    mode = sys.argv[1]
-    if mode == "priority":
-        # Skip during quiet hours (held for overnight flush)
-        if _in_quiet_hours(datetime.now(timezone.utc)):
-            print("priority: quiet hours, holding")
-        else:
-            print(flush_priority())
-    elif mode == "other":
-        if _in_quiet_hours(datetime.now(timezone.utc)):
-            print("other: quiet hours, holding")
-        else:
-            print(flush_other())
-    elif mode == "overnight":
-        print(flush_overnight())
+        raise SystemExit("Usage: python delivery.py flush <profile>")
+    if sys.argv[1] == "flush" and len(sys.argv) >= 3:
+        print(flush_profile(sys.argv[2]))
     else:
-        raise SystemExit(f"Unknown mode: {mode}")
+        raise SystemExit("Usage: python delivery.py flush <profile>")

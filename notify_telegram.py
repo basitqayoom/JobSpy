@@ -71,7 +71,50 @@ def _config() -> dict:
         "disabled": disabled,
         "dashboard": dashboard,
         "configured": bool(token and chat_id),
+        # Feed bots per region
+        "india_token":  os.environ.get("TELEGRAM_INDIA_BOT_TOKEN", "").strip(),
+        "india_chat_id": os.environ.get("TELEGRAM_INDIA_CHAT_ID", "").strip(),
+        "global_token": os.environ.get("TELEGRAM_GLOBAL_BOT_TOKEN", "").strip(),
+        "global_chat_id": os.environ.get("TELEGRAM_GLOBAL_CHAT_ID", "").strip(),
     }
+
+
+def feed_bot(region: str) -> tuple[str, str]:
+    """Return (token, chat_id) for a feed bot. region='india' or anything else."""
+    cfg = _config()
+    if region == "india":
+        return (cfg["india_token"], cfg["india_chat_id"])
+    return (cfg["global_token"], cfg["global_chat_id"])
+
+
+def send_via(token: str, chat_id: str, text: str, *, disable_preview: bool = True, silent: bool = False) -> dict:
+    """Direct send via a specific bot/chat pair (bypasses the DM bot)."""
+    if not token or not chat_id:
+        raise RuntimeError("feed bot not configured")
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true" if disable_preview else "false",
+        "disable_notification": "true" if silent else "false",
+    }
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    import urllib.parse, urllib.request, urllib.error
+    body = urllib.parse.urlencode(payload).encode()
+    req = urllib.request.Request(url, data=body, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            j = json.loads(e.read().decode())
+        except Exception:
+            j = {"description": str(e)}
+        if e.code == 429 and isinstance(j.get("parameters"), dict):
+            import time as _t
+            _t.sleep(int(j["parameters"].get("retry_after", 1)) + 1)
+            return send_via(token, chat_id, text, disable_preview=disable_preview, silent=silent)
+        raise RuntimeError(f"Telegram HTTP {e.code}: {j.get('description', '')}") from e
 
 
 def is_configured() -> bool:
