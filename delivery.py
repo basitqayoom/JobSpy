@@ -96,7 +96,7 @@ def _split_section(profile: str, jobs: list[dict], priority: bool, max_chars: in
 
 def _build_messages(scope: str, priority_by_profile: dict[str, list[dict]],
                     other_by_profile: dict[str, list[dict]]) -> list[str]:
-    now = datetime.now().strftime("%d %b %H:%M")
+    now = N.now_ist_str()
     dashboard = N._config().get("dashboard", "")
 
     total_pri = sum(len(v) for v in priority_by_profile.values())

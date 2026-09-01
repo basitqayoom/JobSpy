@@ -216,12 +216,30 @@ def _short_location(loc: str) -> str:
     return loc.split(",")[0].strip()
 
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def now_ist_str(fmt: str = "%d %b %H:%M") -> str:
+    return datetime.now(IST).strftime(fmt) + " IST"
+
+
 def _short_rel(iso: str) -> str:
-    """Compact relative date: 'Today', 'Yesterday', '3d ago', or 'DD MMM'."""
+    """Fine-grained 'ago' string.
+
+    < 60s   -> 'just now'
+    < 60m   -> 'Nm ago'
+    < 24h   -> 'Nh ago'
+    < 7d    -> 'Nd ago'
+    else    -> 'DD MMM'
+
+    Input can be a full ISO timestamp (with tz) or a plain YYYY-MM-DD.
+    All comparisons are done in UTC internally; display is timezone-agnostic
+    for relative units, absolute date uses IST for consistency.
+    """
     if not iso:
         return ""
     try:
-        d = datetime.fromisoformat(str(iso))
+        d = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
     except ValueError:
         try:
             d = datetime.strptime(str(iso), "%Y-%m-%d")
@@ -229,14 +247,20 @@ def _short_rel(iso: str) -> str:
             return str(iso)
     if d.tzinfo is None:
         d = d.replace(tzinfo=timezone.utc)
-    days = (datetime.now(timezone.utc).date() - d.date()).days
-    if days <= 0:
-        return "Today"
-    if days == 1:
-        return "Yesterday"
-    if days < 7:
+    now = datetime.now(timezone.utc)
+    secs = (now - d).total_seconds()
+    if secs < 45:
+        return "just now"
+    if secs < 60 * 90:
+        m = max(1, int(round(secs / 60)))
+        return f"{m}m ago"
+    if secs < 60 * 60 * 24:
+        h = int(round(secs / 3600))
+        return f"{h}h ago"
+    if secs < 60 * 60 * 24 * 7:
+        days = int(secs // 86400)
         return f"{days}d ago"
-    return d.strftime("%d %b")
+    return d.astimezone(IST).strftime("%d %b")
 
 
 def _short_title(title: str, limit: int = 60) -> str:
@@ -269,7 +293,10 @@ def _format_job_card_body(job: dict, index: int = 0, *, priority: bool) -> str:
     company = _esc(company_raw)
     title = _esc(_short_title(job.get("title") or "?"))
     loc = _short_location(job.get("location") or "")
-    when = _short_rel(job.get("date_posted") or "")
+    # Prefer 'first_seen_at' (when WE noticed it, minute-precision), fall back
+    # to LinkedIn's coarser 'date_posted' (day-precision).
+    when_source = job.get("first_seen_at") or job.get("date_posted") or ""
+    when = _short_rel(when_source)
     url = job.get("job_url")
 
     lines: list[str] = []
