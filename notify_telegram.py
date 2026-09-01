@@ -31,10 +31,9 @@ MAX_MSG_CHARS = 3800          # Telegram hard limit is 4096; leave headroom.
 SEND_DELAY_S = 0.4            # Gentle rate-limit spacing.
 DEDUPE_KEEP_DAYS = 30         # How long to remember sent jobs.
 MAX_OTHER_LISTED = 20         # Cap on non-priority job lines per digest.
-GROUP_MAX_FAILURES = 5        # Auto-disable group send after this many consecutive failures.
 
-# Runtime state (tracks group-send health so we don't spam scrape.log).
-_group_state = {"failures": 0, "disabled": False, "last_error": ""}
+
+
 
 
 # --------------------------------------------------------------------------- #
@@ -63,13 +62,12 @@ def load_env(path: str = ENV_FILE) -> None:
 def _config() -> dict:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    group_chat_id = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "").strip()
+
     disabled = os.environ.get("TELEGRAM_DISABLED", "").strip() in {"1", "true", "yes"}
     dashboard = os.environ.get("DASHBOARD_URL", "").strip()
     return {
         "token": token,
         "chat_id": chat_id,
-        "group_chat_id": group_chat_id,
         "disabled": disabled,
         "dashboard": dashboard,
         "configured": bool(token and chat_id),
@@ -87,10 +85,6 @@ def status() -> dict:
         "configured": c["configured"],
         "disabled": c["disabled"],
         "chat_id": c["chat_id"] if c["configured"] else "",
-        "group_chat_id": c["group_chat_id"] if c["group_chat_id"] else "",
-        "group_disabled": _group_state["disabled"],
-        "group_failures": _group_state["failures"],
-        "group_last_error": _group_state["last_error"],
         "token_tail": ("…" + c["token"][-4:]) if c["token"] else "",
         "dashboard": c["dashboard"],
         "sent_total": _sent_count(),
@@ -226,42 +220,53 @@ def _short_company(company: str, limit: int = 22) -> str:
     return c if len(c) <= limit else c[: limit - 1].rstrip() + "…"
 
 
-def _format_job_card_body(job: dict, index: int, *, priority: bool) -> str:
-    """Layout one job with real typographic hierarchy.
+def _format_job_card_body(job: dict, index: int = 0, *, priority: bool) -> str:
+    """Layout one job with sharp typographic hierarchy.
 
-        ⭐ 1                       (small marker line)
-        COMPANY NAME                (BOLD — the ONLY strong element)
-        Job Title                   (plain, natural wrap)
-        City · Today                (italic, muted)
+    Priority (brand-first):
+        \u2b50 COMPANY NAME
+        Senior Frontend Engineer   (link)
+        Bangalore \u00b7 Today     (italic meta)
 
-        Apply on LinkedIn →        (link on its own line — clear CTA)
+    Other (role-first):
+        Senior Frontend Engineer   (bold link)
+        Zoho \u00b7 Chennai \u00b7 Today
+
+    `index` is accepted for backward-compat but no longer rendered.
     """
-    marker = "⭐" if priority else "•"
-    company = _esc(_short_company(job.get("company") or "?"))
+    company_raw = _short_company(job.get("company") or "?")
+    company = _esc(company_raw)
     title = _esc(_short_title(job.get("title") or "?"))
     loc = _short_location(job.get("location") or "")
     when = _short_rel(job.get("date_posted") or "")
+    url = job.get("job_url")
 
     lines: list[str] = []
-    # Small marker + index (visual breadcrumb, not competing with company)
-    lines.append(f"{marker} {index}")
-    # Company: THE anchor line. Bold + all caps.
-    lines.append(f"<b>{company.upper()}</b>")
-    # Title: plain text so the company still wins visual weight.
-    lines.append(title)
-    # Meta: italic to recede.
-    meta_bits = [b for b in (loc, when) if b]
-    if meta_bits:
-        lines.append(f"<i>{_esc(' · '.join(meta_bits))}</i>")
-    url = job.get("job_url")
-    if url:
-        # Blank line before the CTA gives the link visual breathing room.
-        lines.append("")
-        lines.append(f'▶️ <a href="{_esc(url)}">Apply on LinkedIn →</a>')
+    if priority:
+        lines.append(f"\u2b50 <b>{company.upper()}</b>")
+        if url:
+            lines.append(f'<a href="{_esc(url)}">{title}</a>')
+        else:
+            lines.append(title)
+        meta_bits = [b for b in (loc, when) if b]
+        if meta_bits:
+            lines.append(f"<i>{_esc(' \u00b7 '.join(meta_bits))}</i>")
+    else:
+        if url:
+            lines.append(f'<a href="{_esc(url)}"><b>{title}</b></a>')
+        else:
+            lines.append(f"<b>{title}</b>")
+        meta_parts = [b for b in (company_raw, loc, when) if b]
+        if meta_parts:
+            first, *rest = meta_parts
+            if rest:
+                lines.append(f"{_esc(first)} <i>\u00b7 {_esc(' \u00b7 '.join(rest))}</i>")
+            else:
+                lines.append(_esc(first))
     return "\n".join(lines)
 
 
-def format_job_card(job: dict, index: int, *, priority: bool = False) -> str:
+def format_job_card(job: dict, index: int = 0, *, priority: bool = False) -> str:
     """Render a single job as a distinct Telegram <blockquote> card."""
     return f"<blockquote>{_format_job_card_body(job, index, priority=priority)}</blockquote>"
 
@@ -280,8 +285,8 @@ def _unique_companies(jobs: list[dict], limit: int = 3) -> tuple[str, int]:
     return ", ".join(seen[:limit]), len(seen) - limit
 
 
-DIVIDER = "━" * 20  # heavy horizontal rule between sections
-CARD_SEP = "┈" * 18  # dotted rule between individual cards (lighter than DIVIDER)
+DIVIDER = "─" * 14   # lighter horizontal rule between sections (was heavy ━x20)
+CARD_SEP = "· " * 6   # airy dotted rule between cards inside expandable box
 
 
 def build_digest(
@@ -321,39 +326,32 @@ def build_digest(
 
     # ---- Notification preview line (this is what shows in the phone tray) ----
     # Keep this line short: mobile lock-screen previews truncate around ~60 chars.
-    if n_pri:
-        pri_cos, pri_extra = _unique_companies(new_priority, limit=2)
-        pri_bit = f"⭐ <b>{n_pri} priority</b>"
-        if pri_cos:
-            pri_bit += f": {_esc(pri_cos)}"
-            if pri_extra:
-                pri_bit += f" +{pri_extra}"
+    total_new = n_pri + n_oth
+
+    header: list[str] = []
+    if total_new == 0:
+        header.append("<b>No new jobs</b>")
     else:
-        pri_bit = ""
-
-    if n_oth:
-        oth_bit = f"+<b>{n_oth} other</b>"
-    else:
-        oth_bit = ""
-
-    preview_parts = [b for b in (pri_bit, oth_bit) if b]
-    if not preview_parts:
-        preview_parts = ["<b>no new jobs</b>"]
-    headline = " · ".join(preview_parts)
-    subheadline = f"<i>{_esc(when)}</i>"
-
-    header = [headline, subheadline, ""]
+        header.append(f"<b>🔔 {total_new} new job{'s' if total_new != 1 else ''}</b>")
+        if n_pri:
+            pri_cos, pri_extra = _unique_companies(new_priority, limit=2)
+            line = f"⭐ <b>{n_pri} priority</b>"
+            if pri_cos:
+                line += f"  —  {_esc(pri_cos)}"
+                if pri_extra:
+                    line += f" +{pri_extra}"
+            header.append(line)
+        if n_oth:
+            header.append(f"🆕 <b>{n_oth} other</b>")
+    header.append(f"<i>{_esc(when)}</i>")
+    header.append("")
 
     # ---- Optional footer (context + dashboard link) ----
-    context_bits = [f"<i>Scraped {scraped_count} jobs"]
-    skipped_bits = []
-    if skipped_priority:
-        skipped_bits.append(f"{skipped_priority} priority")
-    if skipped_other:
-        skipped_bits.append(f"{skipped_other} other")
-    if skipped_bits:
-        context_bits.append(f"skipped: {' + '.join(skipped_bits)} already sent")
-    context = " · ".join(context_bits) + "</i>"
+    context_bits = [f"Scraped {scraped_count}"]
+    skipped_total = skipped_priority + skipped_other
+    if skipped_total:
+        context_bits.append(f"{skipped_total} already sent")
+    context = f"<i>{_esc(' · '.join(context_bits))}</i>"
 
     other_listed = list(new_other[:MAX_OTHER_LISTED])
     other_overflow = max(0, n_oth - len(other_listed))
@@ -389,15 +387,13 @@ def build_digest(
             add(format_job_card(job, idx, priority=priority))
 
     if new_priority:
-        add(DIVIDER, allow_split=False)
-        add(f"⭐ <b>PRIORITY · {n_pri}</b>", allow_split=False)
+        add(f"⭐ <b>PRIORITY</b>  ·  {n_pri} job{'s' if n_pri != 1 else ''}", allow_split=False)
         add(DIVIDER, allow_split=False)
         emit_cards(new_priority, priority=True)
 
     if other_listed:
         add("", allow_split=False)
-        add(DIVIDER, allow_split=False)
-        add(f"🆕 <b>OTHER · {n_oth}</b>", allow_split=False)
+        add(f"🆕 <b>OTHER</b>  ·  {n_oth} job{'s' if n_oth != 1 else ''}", allow_split=False)
         add(DIVIDER, allow_split=False)
 
         # First card always visible; overflow tucked into an expandable card.
@@ -426,9 +422,11 @@ def build_digest(
 
     # Footer on final message only
     current.append("")
-    current.append(context)
+    current.append(DIVIDER)
     if dashboard:
-        current.append(f"Dashboard → {_esc(dashboard)}")
+        current.append(f'📊 <a href="{_esc(dashboard)}">Open dashboard</a>  ·  {context}')
+    else:
+        current.append(context)
     messages.append("\n".join(current).rstrip())
     return messages
 
@@ -471,50 +469,15 @@ def _send_to(chat_id: str, text: str, *, disable_preview: bool, silent: bool) ->
     })
 
 
-def _strip_dashboard(text: str) -> str:
-    """Remove any 'Dashboard → ...' footer line from a message body."""
-    lines = text.splitlines()
-    kept = []
-    for line in lines:
-        stripped = line.strip()
-        # Skip the dashboard footer entirely (raw or wrapped in tags).
-        if stripped.startswith("Dashboard →"):
-            continue
-        kept.append(line)
-    # Trim trailing blank lines.
-    while kept and not kept[-1].strip():
-        kept.pop()
-    return "\n".join(kept)
-
-
 def send_message(
     text: str,
     *,
     disable_preview: bool = True,
     silent: bool = False,
-    group_text: str | None = None,
 ) -> dict:
-    """Send to the DM chat, then mirror to the group (silently, best-effort).
-
-    If ``group_text`` is None the group receives the DM copy with the Dashboard
-    footer stripped (private info, not for the shared group).
-    """
+    """Send a Telegram message to the configured DM chat."""
     cfg = _config()
-    result = _send_to(cfg["chat_id"], text, disable_preview=disable_preview, silent=silent)
-
-    if cfg["group_chat_id"] and not _group_state["disabled"]:
-        payload = group_text if group_text is not None else _strip_dashboard(text)
-        try:
-            _send_to(cfg["group_chat_id"], payload, disable_preview=disable_preview, silent=True)
-            _group_state["failures"] = 0
-            _group_state["last_error"] = ""
-        except Exception as exc:  # noqa: BLE001 - never let group failure break DM flow
-            _group_state["failures"] += 1
-            _group_state["last_error"] = str(exc)
-            if _group_state["failures"] >= GROUP_MAX_FAILURES:
-                _group_state["disabled"] = True
-
-    return result
+    return _send_to(cfg["chat_id"], text, disable_preview=disable_preview, silent=silent)
 
 
 def send_test() -> dict:
@@ -523,10 +486,6 @@ def send_test() -> dict:
         f"⭐ <b>Test</b> · JobSpy notifications — {_esc(now)}\n"
         "If you can read this, priority-job alerts will land here after each scrape. ✅"
     )
-    # Reset any prior group failure state so a manual test can re-arm the target.
-    _group_state["disabled"] = False
-    _group_state["failures"] = 0
-    _group_state["last_error"] = ""
     return send_message(text)
 
 

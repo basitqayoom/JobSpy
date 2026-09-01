@@ -1,0 +1,27 @@
+{
+  "flag": "🇵🇱",
+  "display_name": "Poland",
+  "location": "Poland",
+  "search_term": "(\"Frontend Engineer\" OR \"Front-End Engineer\" OR \"Frontend Developer\" OR \"Front-End Developer\" OR \"Backend Engineer\" OR \"Back-End Engineer\" OR \"Backend Developer\" OR \"Back-End Developer\" OR \"Full Stack Engineer\" OR \"Full-Stack Engineer\" OR \"Full Stack Developer\" OR \"Full-Stack Developer\" OR \"Software Engineer\" OR \"Software Developer\" OR \"Software Development Engineer\" OR \"Senior Software Engineer\" OR \"Senior Frontend Engineer\" OR \"Senior Backend Engineer\" OR \"Senior Full-Stack Engineer\" OR \"Staff Software Engineer\" OR \"Staff Engineer\" OR \"Principal Engineer\" OR \"Lead Engineer\" OR \"Lead Software Engineer\" OR \"SDE\" OR \"SDE I\" OR \"SDE II\" OR \"SDE III\" OR \"Software Engineer I\" OR \"Software Engineer II\" OR \"Software Engineer III\" OR \"Member of Technical Staff\" OR \"Platform Engineer\" OR \"Product Engineer\" OR \"Application Engineer\" OR \"Applications Engineer\" OR \"Web Engineer\" OR \"Web Developer\" OR \"UI Engineer\" OR \"UI Developer\" OR \"Node.js Developer\" OR \"Node Developer\" OR \"Java Developer\" OR \"Python Developer\" OR \"Go Developer\" OR \"Golang Developer\" OR \"Frontend Architect\" OR \"Backend Architect\" OR \"Software Architect\") AND (React OR ReactJS OR \"React Native\" OR \"Next.js\" OR NextJS OR TypeScript OR JavaScript OR Node OR \"Node.js\" OR NodeJS OR Express OR NestJS OR Java OR Spring OR \"Spring Boot\" OR Python OR Django OR Flask OR FastAPI OR Go OR Golang OR Ruby OR \"Ruby on Rails\") NOT (Intern OR Internship OR Trainee OR Fresher OR Apprentice OR \"New Grad\" OR \"Recent Graduate\" OR Bootcamp OR Werkstudent OR QA OR Testing OR \"Test Engineer\" OR \"QA Engineer\" OR SDET OR \"Automation Engineer\" OR Sales OR Support OR \"Customer Success\" OR \"Solutions Engineer\" OR \"Sales Engineer\" OR \"Data Entry\" OR \"Business Analyst\" OR \"Project Manager\" OR \"Product Manager\")",
+  "results_wanted": 1000,
+  "hours_old": null,
+  "minutes_old": 120,
+  "priority_companies": [
+    "Google",
+    "Meta",
+    "Amazon",
+    "Apple",
+    "Microsoft",
+    "Nvidia",
+    "Netflix",
+    "Allegro",
+    "InPost",
+    "Booksy",
+    "DocPlanner",
+    "Ramp",
+    "Brainly",
+    "Vercel",
+    "Snowflake",
+    "Atlassian"
+  ]
+}
