@@ -19,4 +19,6 @@ audit.log
 scrape.log
 server.out
 ngrok.out
+bot_chat.log
+.bot_offset
 *.csv
