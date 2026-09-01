@@ -122,56 +122,89 @@ def _fmt_card(job: dict, *, show_flag: bool = True) -> str:
     return f"<blockquote>{body}</blockquote>"
 
 
-def _chunk_send(chat_id: str, lines: list[str], *, silent: bool = False) -> None:
-    msgs: list[str] = []
-    cur, cur_len = [], 0
-    for line in lines:
-        add = len(line) + 1
-        if len(line) > MAX_MSG_CHARS:
-            if cur:
-                msgs.append("\n".join(cur).rstrip())
-                cur, cur_len = [], 0
-            msgs.append(line)
-            continue
-        if cur_len + add > MAX_MSG_CHARS and cur:
-            msgs.append("\n".join(cur).rstrip())
-            cur, cur_len = [], 0
-        cur.append(line)
-        cur_len += add
-    if cur:
-        msgs.append("\n".join(cur).rstrip())
-    for m in msgs:
+def _chunk_send(chat_id: str, replies: list[str], *, silent: bool = False) -> None:
+    """Send pre-chunked reply messages. Each item must already be <= MAX_MSG_CHARS."""
+    for m in replies:
         N.send_message(m, silent=silent)
         time.sleep(0.4)
 
 
 def _list_jobs_reply(jobs: list[dict], header: str, footer: str = "") -> list[str]:
+    """Return a list of Telegram-safe messages (each <=MAX_MSG_CHARS).
+
+    Splits at region-section boundaries and, if a single region is still too
+    big, between individual cards. Never splits inside a <blockquote>.
+    """
     if not jobs:
         return [f"{header}\n\n<i>No matches.</i>"]
-    lines = [header, ""]
+
     # Group by region, India first, then by count.
     by_region: dict[str, list[dict]] = {}
     for j in jobs:
         by_region.setdefault(j.get("profile", "?"), []).append(j)
     ordered = _india_first(list(by_region.keys()))
     ordered.sort(key=lambda p: (0 if p == "india" else 1, -len(by_region[p]), p))
-    total = sum(len(v) for v in by_region.values())
+
+    messages: list[str] = []
+    current: list[str] = [header, ""]
+    current_len = sum(len(x) + 1 for x in current)
+
+    def flush_current():
+        nonlocal current, current_len
+        if current and any(x.strip() for x in current):
+            messages.append("\n".join(current).rstrip())
+        current = []
+        current_len = 0
+
+    def emit_line(line: str):
+        nonlocal current_len
+        add = len(line) + 1
+        if current_len + add > MAX_MSG_CHARS:
+            flush_current()
+        current.append(line)
+        current_len += add
+
     for p in ordered:
         meta = _profile_meta(p)
         section = by_region[p]
-        lines.append("─" * 14)
-        lines.append(f"{meta.get('flag','')} <b>{N._esc(meta.get('display_name', p))}</b>  ·  {len(section)}")
-        lines.append("")
         visible = section[:RESULTS_PER_PAGE]
+
+        section_header = [
+            "─" * 14,
+            f"{meta.get('flag','')} <b>{N._esc(meta.get('display_name', p))}</b>  ·  {len(section)}",
+            "",
+        ]
+        # If section header itself doesn't fit -> flush.
+        header_len = sum(len(x) + 1 for x in section_header)
+        if current_len + header_len > MAX_MSG_CHARS:
+            flush_current()
+        for line in section_header:
+            emit_line(line)
+
         for j in visible:
-            lines.append(_fmt_card(j, show_flag=False))
+            card = _fmt_card(j, show_flag=False)
+            # Card too big for empty message? Rare, but skip cleanly.
+            if len(card) > MAX_MSG_CHARS:
+                continue
+            if current_len + len(card) + 1 > MAX_MSG_CHARS:
+                flush_current()
+                # Restart new message with a lightweight continuation banner.
+                current = [f"{meta.get('flag','')} <b>{N._esc(meta.get('display_name', p))}</b> (continued)", ""]
+                current_len = sum(len(x) + 1 for x in current)
+            emit_line(card)
+
         if len(section) > RESULTS_PER_PAGE:
-            lines.append(f"<i>… +{len(section) - RESULTS_PER_PAGE} more (see dashboard)</i>")
+            emit_line(f"<i>… +{len(section) - RESULTS_PER_PAGE} more (see dashboard)</i>")
+
     if footer:
-        lines.append("")
-        lines.append("─" * 14)
-        lines.append(footer)
-    return lines
+        footer_lines = ["", "─" * 14, footer]
+        if current_len + sum(len(x)+1 for x in footer_lines) > MAX_MSG_CHARS:
+            flush_current()
+        for line in footer_lines:
+            emit_line(line)
+
+    flush_current()
+    return messages
 
 
 # --------------------------------------------------------------------------- #
