@@ -701,7 +701,7 @@
 
     async function load() {
       try {
-        const res = await fetch("data.json?_=" + Date.now(), { cache: "no-store" });
+        const res = await fetch("/api/data?_=" + Date.now(), { cache: "no-store" });
         if (!res.ok) throw new Error("HTTP " + res.status);
         const data = await res.json();
         allJobs = Array.isArray(data.jobs) ? data.jobs : [];
@@ -719,13 +719,15 @@
           gen ? "Updated " + fmtDate(data.generated_at) : "Updated (unknown time)",
           age > STALE_MS ? "stale" : null
         );
+        const profileChips = (data.profiles || [])
+          .map(p => `${p.flag} ${escapeHtml(p.display_name)} (${p.count})`)
+          .join(" &middot; ");
         $("summary").innerHTML =
-          `<strong>${data.count ?? allJobs.length}</strong> jobs &middot; ` +
-          `search: <strong>${escapeHtml(data.search_term || "")}</strong> &middot; ` +
-          `location: <strong>${escapeHtml(data.location || "")}</strong>`;
+          `<strong>${data.count ?? allJobs.length}</strong> jobs across <strong>${(data.profiles || []).length}</strong> regions<br>` +
+          `<small>${profileChips}</small>`;
         render();
       } catch (err) {
-        setStatus("Failed to load data.json (" + err.message + ")", "error");
+        setStatus("Failed to load data (" + err.message + ")", "error");
       }
     }
 

@@ -84,8 +84,18 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    def _route(self) -> str:
+        return (self.path.split("?", 1)[0]).rstrip("/") or "/"
+
     def do_GET(self):
-        if self.path.rstrip("/") == "/api/telegram/status":
+        route = self._route()
+        if route == "/api/data":
+            self._serve_aggregated_data()
+            return
+        if route == "/api/profiles":
+            self._serve_profile_list()
+            return
+        if route == "/api/telegram/status":
             if notify_telegram is None:
                 self._send_json(200, {"ok": True, "configured": False, "reason": "module missing"})
                 return
@@ -97,8 +107,68 @@ class Handler(SimpleHTTPRequestHandler):
             return
         return super().do_GET()
 
+    def _serve_aggregated_data(self):
+        """Merge all web/state/<profile>/data.json into one payload."""
+        root = os.path.join(WEB_DIR, "state")
+        merged_jobs = []
+        profiles = []
+        latest_ts = ""
+        try:
+            if os.path.isdir(root):
+                for profile in sorted(os.listdir(root)):
+                    p_data = os.path.join(root, profile, "data.json")
+                    if not os.path.exists(p_data):
+                        continue
+                    with open(p_data, encoding="utf-8") as fh:
+                        d = json.load(fh)
+                    profiles.append({
+                        "profile": profile,
+                        "flag": d.get("flag", ""),
+                        "display_name": d.get("display_name", profile),
+                        "location": d.get("location", ""),
+                        "count": d.get("count", 0),
+                        "generated_at": d.get("generated_at", ""),
+                    })
+                    for j in d.get("jobs", []):
+                        j2 = dict(j)
+                        j2.setdefault("profile", profile)
+                        j2.setdefault("flag", d.get("flag", ""))
+                        j2.setdefault("display_name", d.get("display_name", profile))
+                        merged_jobs.append(j2)
+                    if d.get("generated_at", "") > latest_ts:
+                        latest_ts = d["generated_at"]
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, {
+            "generated_at": latest_ts,
+            "profiles": profiles,
+            "count": len(merged_jobs),
+            "jobs": merged_jobs,
+        })
+
+    def _serve_profile_list(self):
+        root = os.path.join(WEB_DIR, "profiles")
+        out = []
+        try:
+            for f in sorted(os.listdir(root)):
+                if not f.endswith(".json"):
+                    continue
+                with open(os.path.join(root, f), encoding="utf-8") as fh:
+                    cfg = json.load(fh)
+                out.append({
+                    "profile": f[:-5],
+                    "flag": cfg.get("flag", ""),
+                    "display_name": cfg.get("display_name", f[:-5]),
+                    "location": cfg.get("location", ""),
+                })
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, {"profiles": out})
+
     def do_POST(self):
-        if self.path.rstrip("/") == "/api/telegram/test":
+        if self._route() == "/api/telegram/test":
             if notify_telegram is None:
                 self._send_json(500, {"ok": False, "error": "notify_telegram module missing"})
                 return
@@ -113,7 +183,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": str(exc)})
             return
 
-        if self.path.rstrip("/") == "/api/config":
+        if self._route() == "/api/config":
             try:
                 cfg = sanitize_config(self._read_json_body())
                 with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
@@ -123,16 +193,18 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(400, {"ok": False, "error": str(exc)})
             return
 
-        if self.path.rstrip("/") == "/api/run":
+        if self._route() == "/api/run":
             try:
+                body = self._read_json_body() if int(self.headers.get("content-length", 0) or 0) else {}
+                profile = (body.get("profile") or "all").strip()
                 subprocess.Popen(
-                    ["/bin/bash", RUNNER],
+                    ["/bin/bash", RUNNER, profile],
                     start_new_session=True,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                self._send_json(200, {"ok": True, "started": True})
+                self._send_json(200, {"ok": True, "started": True, "profile": profile})
             except OSError as exc:
                 self._send_json(500, {"ok": False, "error": str(exc)})
             return

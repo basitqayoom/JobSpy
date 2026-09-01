@@ -13,6 +13,9 @@
 web/telegram_sent.json
 web/first_seen.json
 web/data.json
+web/pending_jobs.json
+web/state/
+audit.log
 scrape.log
 server.out
 ngrok.out
