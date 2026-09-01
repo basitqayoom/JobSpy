@@ -89,11 +89,20 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         route = self._route()
+        if route == "/api/jobs":
+            self._serve_jobs_search()
+            return
         if route == "/api/data":
             self._serve_aggregated_data()
             return
         if route == "/api/profiles":
             self._serve_profile_list()
+            return
+        if route == "/api/companies":
+            self._serve_companies()
+            return
+        if route == "/api/stats":
+            self._serve_stats()
             return
         if route == "/api/telegram/status":
             if notify_telegram is None:
@@ -192,6 +201,85 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self._send_json(200, {"profiles": out})
 
+    def _serve_jobs_search(self):
+        """GET /api/jobs?q=&profile=&region=&company=&priority=&applied=&saved=&hidden=&posted=&order=&desc=&limit=&offset="""
+        import db as _db
+        from urllib.parse import parse_qs, urlparse
+        qs = parse_qs(urlparse(self.path).query)
+        def _g(k, default=""): v = qs.get(k, [default]); return v[0] if v else default
+        def _b(k):
+            v = qs.get(k, [None])
+            if not v or v[0] is None: return None
+            return v[0].lower() in ("1", "true", "yes", "on")
+        def _i(k, default):
+            try: return int(_g(k, str(default)))
+            except: return default
+        try:
+            rows, total = _db.search(
+                q=_g("q").strip(),
+                profile=_g("profile").strip(),
+                region_group=_g("region").strip().lower(),
+                company=_g("company").strip(),
+                priority=_b("priority"),
+                applied=_b("applied"),
+                saved=_b("saved"),
+                hidden=_b("hidden"),
+                posted_within_hours=(_i("posted", 0) or None),
+                order=_g("order", "first_seen_at"),
+                desc=(_g("desc", "true").lower() != "false"),
+                limit=max(1, min(500, _i("limit", 100))),
+                offset=max(0, _i("offset", 0)),
+            )
+            # Attach flag/display_name from profile files (cached would be nicer).
+            profile_meta = {}
+            proot = os.path.join(WEB_DIR, "profiles")
+            if os.path.isdir(proot):
+                for f in os.listdir(proot):
+                    if f.endswith(".json"):
+                        with open(os.path.join(proot, f), encoding="utf-8") as fh:
+                            profile_meta[f[:-5]] = json.load(fh)
+            jobs = []
+            for r in rows:
+                m = profile_meta.get(r["profile"], {})
+                jobs.append({
+                    "url": r["url"],
+                    "title": r["title"],
+                    "company": r["company"],
+                    "location": r["location"],
+                    "date_posted": r["date_posted"],
+                    "is_priority": bool(r["is_priority"]),
+                    "first_seen_at": r["first_seen_at"],
+                    "applied": bool(r.get("applied_at")),
+                    "saved": bool(r.get("saved_at")),
+                    "hidden": bool(r.get("hidden_at")),
+                    "profile": r["profile"],
+                    "flag": m.get("flag", ""),
+                    "display_name": m.get("display_name", r["profile"]),
+                })
+            self._send_json(200, {"total": total, "count": len(jobs), "jobs": jobs})
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+
+    def _serve_companies(self):
+        import db as _db
+        from urllib.parse import parse_qs, urlparse
+        qs = parse_qs(urlparse(self.path).query)
+        profile = (qs.get("profile", [""])[0] or "").strip()
+        try:
+            self._send_json(200, {"companies": _db.distinct_companies(profile=profile)})
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+
+    def _serve_stats(self):
+        import db as _db
+        try:
+            self._send_json(200, {
+                "totals": _db.stats(),
+                "by_profile": _db.counts_by_profile(),
+            })
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+
     def do_POST(self):
         if self._route() == "/api/telegram/test":
             if notify_telegram is None:
@@ -216,6 +304,24 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "config": cfg})
             except (json.JSONDecodeError, ValueError) as exc:
                 self._send_json(400, {"ok": False, "error": str(exc)})
+            return
+
+        # Toggle flags: POST /api/jobs/flag  {url, kind:applied|saved|hidden, value:bool}
+        if self._route() == "/api/jobs/flag":
+            import db as _db
+            try:
+                body = self._read_json_body()
+                url = (body.get("url") or "").strip()
+                kind = (body.get("kind") or "").strip()
+                value = bool(body.get("value"))
+                col = {"applied": "applied_at", "saved": "saved_at", "hidden": "hidden_at"}.get(kind)
+                if not url or not col:
+                    self._send_json(400, {"ok": False, "error": "url and kind (applied|saved|hidden) required"})
+                    return
+                ok = _db.set_flag(url, col, value)
+                self._send_json(200, {"ok": ok, "url": url, "kind": kind, "value": value})
+            except Exception as exc:
+                self._send_json(500, {"ok": False, "error": str(exc)})
             return
 
         if self._route() == "/api/run":
