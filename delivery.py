@@ -1,14 +1,28 @@
-"""Per-tick, per-profile Telegram delivery to region-specific feed bots.
+"""Per-tick, region-scoped Telegram delivery.
 
-- flush_profile(profile): drains ALL unsent jobs (priority + other) for that
-  profile into ONE message posted to the correct feed bot:
-    india          -> TELEGRAM_INDIA_BOT_TOKEN / TELEGRAM_INDIA_CHAT_ID
-    everything else-> TELEGRAM_GLOBAL_BOT_TOKEN / TELEGRAM_GLOBAL_CHAT_ID
+Two scopes:
+  india   -> TELEGRAM_INDIA_BOT_TOKEN   (only 'india' profile)
+  global  -> TELEGRAM_GLOBAL_BOT_TOKEN  (all 11 non-india profiles)
 
-  Priority section first, then Other section.
+Each scope produces ONE compact, heavily-collapsed message per invocation.
+Structure:
+
+    🔔 <scope> · X priority · Y other · <time>
+
+    ⭐ PRIORITY
+    🇺🇸 USA (2)              [expandable blockquote of cards]
+    🇬🇧 UK (1)               [expandable]
+
+    🆕 OTHER
+    🇺🇸 USA (18)             [expandable]
+    🇬🇧 UK (4)               [expandable]
+
+Both priority and other are inside expandable blockquotes so the message
+renders very short at first glance; user taps to unfold each country.
 
 Invoke:
-  python delivery.py flush <profile>
+  python delivery.py flush_india
+  python delivery.py flush_global
 """
 from __future__ import annotations
 
@@ -27,7 +41,6 @@ PROFILES_DIR = os.path.join(WEB_DIR, "profiles")
 
 MAX_MSG_CHARS = 3800
 SEND_DELAY_S  = 0.4
-MAX_OTHER_PER_MESSAGE = 20  # cap OTHER section per profile per tick (rest in expandable)
 
 
 def _load_meta(profile: str) -> dict:
@@ -38,127 +51,157 @@ def _load_meta(profile: str) -> dict:
         return {}
 
 
-def _fmt_priority_card(job: dict) -> str:
-    return f"<blockquote>{N._format_job_card_body(job, 0, priority=True)}</blockquote>"
+def _ordered(profiles: list[str]) -> list[str]:
+    india = [p for p in profiles if p == "india"]
+    others = sorted(p for p in profiles if p != "india")
+    return india + others
 
 
-def _fmt_other_card(job: dict) -> str:
-    return f"<blockquote>{N._format_job_card_body(job, 0, priority=False)}</blockquote>"
+def _card_body(job: dict, priority: bool) -> str:
+    return N._format_job_card_body(job, 0, priority=priority)
 
 
-def _build_message(profile: str, priority_rows: list[dict], other_rows: list[dict]) -> list[str]:
+def _blockquote_section(profile: str, jobs: list[dict], priority: bool) -> str:
+    """Expandable blockquote: header line always visible; cards hidden until tap."""
     meta = _load_meta(profile)
     flag = meta.get("flag", "")
-    display = meta.get("display_name", profile)
+    name = meta.get("display_name", profile)
+    star = "⭐" if priority else "🆕"
+    header = f"{star} {flag} <b>{N._esc(name)}</b>  ·  {len(jobs)}"
+    body = "\n\n".join(_card_body(j, priority) for j in jobs)
+    return f"<blockquote expandable>{header}\n\n{body}</blockquote>"
+
+
+def _split_section(profile: str, jobs: list[dict], priority: bool, max_chars: int) -> list[str]:
+    """Split a single country's section into multiple blockquotes if it exceeds max_chars.
+
+    Each returned string is a complete <blockquote expandable>...</blockquote>.
+    """
+    # Greedy: keep adding cards until section exceeds max_chars.
+    if not jobs:
+        return []
+    parts: list[list[dict]] = [[]]
+    cur_len = 0
+    for j in jobs:
+        card = _card_body(j, priority)
+        add = len(card) + 2  # separator
+        # Overhead of the wrapper + header line ~= 120 chars
+        if cur_len + add > max_chars - 200 and parts[-1]:
+            parts.append([])
+            cur_len = 0
+        parts[-1].append(j)
+        cur_len += add
+    return [_blockquote_section(profile, sub, priority) for sub in parts]
+
+
+def _build_messages(scope: str, priority_by_profile: dict[str, list[dict]],
+                    other_by_profile: dict[str, list[dict]]) -> list[str]:
     now = datetime.now().strftime("%d %b %H:%M")
     dashboard = N._config().get("dashboard", "")
 
-    n_pri = len(priority_rows)
-    n_oth = len(other_rows)
+    total_pri = sum(len(v) for v in priority_by_profile.values())
+    total_oth = sum(len(v) for v in other_by_profile.values())
+    total = total_pri + total_oth
 
+    scope_label = "India" if scope == "india" else "US / EU / Global"
     header_lines = [
-        f"{flag} <b>{N._esc(display)}</b>  ·  {n_pri + n_oth} new",
+        f"🔔 <b>{N._esc(scope_label)}</b>  ·  "
+        f"{total_pri} ⭐  ·  {total_oth} 🆕  ·  <b>{total} new</b>",
         f"<i>{N._esc(now)}</i>",
         "",
     ]
 
-    messages: list[str] = []
-    current = list(header_lines)
-    current_len = sum(len(x) + 1 for x in current)
+    # Build all sections (list of complete <blockquote> strings).
+    sections: list[str] = []
+    if total_pri:
+        sections.append("⭐ <b>PRIORITY</b>")
+        for p in _ordered(list(priority_by_profile.keys())):
+            sections.extend(_split_section(p, priority_by_profile[p], True, MAX_MSG_CHARS))
+        sections.append("")
+    if total_oth:
+        sections.append("🆕 <b>OTHER</b>")
+        for p in _ordered(list(other_by_profile.keys())):
+            sections.extend(_split_section(p, other_by_profile[p], False, MAX_MSG_CHARS))
+        sections.append("")
 
-    def flush():
-        nonlocal current, current_len
-        if current and any(x.strip() for x in current):
-            messages.append("\n".join(current).rstrip())
-        current = []
-        current_len = 0
-
-    def emit(line: str):
-        nonlocal current_len
-        add = len(line) + 1
-        if current_len + add > MAX_MSG_CHARS:
-            flush()
-        current.append(line)
-        current_len += add
-
-    if priority_rows:
-        emit("─" * 14)
-        emit(f"⭐ <b>PRIORITY</b>  ·  {n_pri}")
-        emit("")
-        for j in priority_rows:
-            card = _fmt_priority_card(j)
-            if current_len + len(card) + 1 > MAX_MSG_CHARS:
-                flush()
-                current = [f"{flag} <b>{N._esc(display)}</b> (continued)", ""]
-                current_len = sum(len(x) + 1 for x in current)
-            emit(card)
-
-    if other_rows:
-        emit("")
-        emit("─" * 14)
-        emit(f"🆕 <b>OTHER</b>  ·  {n_oth}")
-        emit("")
-        visible = other_rows[:3]
-        hidden = other_rows[3:MAX_OTHER_PER_MESSAGE]
-        overflow = other_rows[MAX_OTHER_PER_MESSAGE:]
-        for j in visible:
-            card = _fmt_other_card(j)
-            if current_len + len(card) + 1 > MAX_MSG_CHARS:
-                flush()
-                current = [f"{flag} <b>{N._esc(display)}</b> (continued)", ""]
-                current_len = sum(len(x) + 1 for x in current)
-            emit(card)
-        if hidden:
-            expand_body = "\n\n".join(N._format_job_card_body(j, 0, priority=False) for j in hidden)
-            block = f"<blockquote expandable>👇 <b>+{len(hidden)} more</b>\n\n{expand_body}</blockquote>"
-            if len(block) > MAX_MSG_CHARS:
-                # split into halves
-                mid = len(hidden) // 2
-                b1 = "\n\n".join(N._format_job_card_body(j, 0, priority=False) for j in hidden[:mid])
-                b2 = "\n\n".join(N._format_job_card_body(j, 0, priority=False) for j in hidden[mid:])
-                for b, n in [(b1, mid), (b2, len(hidden) - mid)]:
-                    part = f"<blockquote expandable>👇 <b>+{n} more</b>\n\n{b}</blockquote>"
-                    if current_len + len(part) + 1 > MAX_MSG_CHARS:
-                        flush(); current = [f"{flag} <b>{N._esc(display)}</b> (continued)", ""]; current_len = sum(len(x)+1 for x in current)
-                    emit(part)
-            else:
-                if current_len + len(block) + 1 > MAX_MSG_CHARS:
-                    flush(); current = [f"{flag} <b>{N._esc(display)}</b> (continued)", ""]; current_len = sum(len(x)+1 for x in current)
-                emit(block)
-        if overflow:
-            emit(f"<i>… +{len(overflow)} more on the dashboard</i>")
-
+    footer_lines = []
     if dashboard:
-        emit("")
-        emit("─" * 14)
-        emit(f'📊 <a href="{N._esc(dashboard)}">Dashboard</a>')
+        footer_lines.append("─" * 14)
+        footer_lines.append(f'📊 <a href="{N._esc(dashboard)}">Dashboard</a>')
 
-    flush()
+    # Pack header + sections + footer into messages by MAX_MSG_CHARS.
+    # Rules: never split a single blockquote (they're already <= max_chars).
+    messages: list[str] = []
+    header_str = "\n".join(header_lines)
+    cur = [header_str]
+    cur_len = len(header_str) + 1
+
+    def flush(add_continued: bool = False):
+        nonlocal cur, cur_len
+        if cur and any(x.strip() for x in cur):
+            messages.append("\n".join(cur).rstrip())
+        cont = f"🔔 <b>{N._esc(scope_label)}</b> (continued)"
+        cur = [cont, ""]
+        cur_len = len(cont) + 2
+
+    for line in sections + footer_lines:
+        add = len(line) + 1
+        if cur_len + add > MAX_MSG_CHARS:
+            flush(add_continued=True)
+        cur.append(line)
+        cur_len += add
+
+    if cur and any(x.strip() for x in cur):
+        messages.append("\n".join(cur).rstrip())
     return messages
 
 
-def flush_profile(profile: str) -> dict:
+def _collect(profiles: list[str]) -> tuple[dict[str, list[dict]], dict[str, list[dict]], list[str]]:
+    """Return (priority_by_profile, other_by_profile, all_urls)."""
+    pri: dict[str, list[dict]] = {}
+    oth: dict[str, list[dict]] = {}
+    urls: list[str] = []
+    for p in profiles:
+        rows = db.list_jobs(profile=p, sent=False)
+        if not rows:
+            continue
+        pri_rows = [db.row_to_job_dict(r) for r in rows if r["is_priority"]]
+        oth_rows = [db.row_to_job_dict(r) for r in rows if not r["is_priority"]]
+        if pri_rows:
+            pri[p] = pri_rows
+        if oth_rows:
+            oth[p] = oth_rows
+        urls.extend(r["url"] for r in rows)
+    return pri, oth, urls
+
+
+def _all_profiles() -> list[str]:
+    return sorted(f[:-5] for f in os.listdir(PROFILES_DIR) if f.endswith(".json"))
+
+
+def flush_scope(scope: str) -> dict:
     N.load_env()
-    token, chat_id = N.feed_bot(profile)
+    token, chat_id = N.feed_bot("india" if scope == "india" else "global")
     if not token or not chat_id:
-        return {"sent": False, "reason": f"feed bot not configured for {profile}"}
+        return {"sent": False, "reason": f"feed bot not configured for {scope}"}
 
-    unsent = db.list_jobs(profile=profile, sent=False)
-    if not unsent:
-        return {"sent": False, "reason": "nothing-new", "profile": profile}
+    if scope == "india":
+        profiles = ["india"]
+    else:
+        profiles = [p for p in _all_profiles() if p != "india"]
 
-    priority_rows = [db.row_to_job_dict(r) for r in unsent if r["is_priority"]]
-    other_rows    = [db.row_to_job_dict(r) for r in unsent if not r["is_priority"]]
+    pri, oth, urls = _collect(profiles)
+    total = sum(len(v) for v in pri.values()) + sum(len(v) for v in oth.values())
+    if total == 0:
+        return {"sent": False, "reason": "nothing-new", "scope": scope}
 
-    messages = _build_message(profile, priority_rows, other_rows)
-    urls = [r["url"] for r in unsent]
-
+    messages = _build_messages(scope, pri, oth)
     ok = True
     for i, m in enumerate(messages):
         try:
             N.send_via(token, chat_id, m, silent=(i > 0))
         except Exception as exc:
-            print(f"ERROR send {i+1}/{len(messages)} for {profile}: {exc}")
+            print(f"ERROR send {i+1}/{len(messages)} for {scope}: {exc}")
             ok = False
             break
         time.sleep(SEND_DELAY_S)
@@ -167,17 +210,29 @@ def flush_profile(profile: str) -> dict:
         db.mark_sent(urls)
     return {
         "sent": ok,
-        "profile": profile,
-        "priority": len(priority_rows),
-        "other": len(other_rows),
+        "scope": scope,
+        "priority": sum(len(v) for v in pri.values()),
+        "other": sum(len(v) for v in oth.values()),
         "messages": len(messages),
+        "profiles": {p: len(pri.get(p, [])) + len(oth.get(p, [])) for p in profiles if p in pri or p in oth},
     }
+
+
+# Legacy alias so run_scrape.sh doesn't break if not updated yet.
+def flush_profile(profile: str) -> dict:
+    return flush_scope("india" if profile == "india" else "global")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        raise SystemExit("Usage: python delivery.py flush <profile>")
-    if sys.argv[1] == "flush" and len(sys.argv) >= 3:
+        raise SystemExit("Usage: python delivery.py flush_india|flush_global|flush <profile>")
+    cmd = sys.argv[1]
+    if cmd == "flush_india":
+        print(flush_scope("india"))
+    elif cmd == "flush_global":
+        print(flush_scope("global"))
+    elif cmd == "flush" and len(sys.argv) >= 3:
+        # Kept for backward-compat: treats profile arg as scope selector.
         print(flush_profile(sys.argv[2]))
     else:
-        raise SystemExit("Usage: python delivery.py flush <profile>")
+        raise SystemExit("Usage: python delivery.py flush_india|flush_global")
