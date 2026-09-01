@@ -19,6 +19,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
+import db
 import notify_telegram as N
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -67,34 +68,16 @@ def _ordered_profiles(profiles_with_hits: dict[str, list]) -> list[str]:
 
 
 def _drain_pending(bucket: str) -> dict[str, list[dict]]:
-    """Return {profile: [jobs]} for jobs in <bucket> that haven't been sent."""
-    sent = N._prune(N._load_sent())
-    result: dict[str, list[dict]] = {}
-    for profile in _list_profiles():
-        path = os.path.join(STATE_ROOT, profile, f"pending_{bucket}.json")
-        pending = _load_json(path)
-        # Filter out anything already sent.
-        fresh = [j for u, j in pending.items() if u and u not in sent]
-        if fresh:
-            result[profile] = fresh
-    return result
+    """Return {profile: [jobs]} for jobs in <bucket> (priority/other) that haven't been sent."""
+    is_pri = True if bucket == "priority" else False
+    rows_by_profile = db.pending_by_profile(priority=is_pri)
+    return {p: [db.row_to_job_dict(r) for r in rows] for p, rows in rows_by_profile.items()}
 
 
 def _mark_sent_and_clear(bucket: str, jobs_by_profile: dict[str, list[dict]]) -> None:
-    """Update telegram_sent.json and remove from each profile's pending file."""
-    sent = N._load_sent()
-    now_iso = datetime.now(timezone.utc).astimezone().isoformat()
-    for profile, jobs in jobs_by_profile.items():
-        path = os.path.join(STATE_ROOT, profile, f"pending_{bucket}.json")
-        pending = _load_json(path)
-        for j in jobs:
-            url = j.get("job_url")
-            if not url:
-                continue
-            sent[url] = now_iso
-            pending.pop(url, None)
-        _save_json(path, pending)
-    N._save_sent(sent)
+    urls = [j.get("job_url") for jobs in jobs_by_profile.values() for j in jobs if j.get("job_url")]
+    if urls:
+        db.mark_sent(urls)
 
 
 # --------------------------------------------------------------------------- #
