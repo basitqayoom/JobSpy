@@ -206,6 +206,20 @@ def flush_scope(scope: str) -> dict:
             break
         time.sleep(SEND_DELAY_S)
 
+    # Mirror INDIA PRIORITY jobs to a dedicated bot (does not affect dedupe).
+    if ok and scope == "india":
+        cfg = N._config()
+        pt, pc = cfg["priority_india_token"], cfg["priority_india_chat_id"]
+        india_pri = pri.get("india", [])
+        if pt and pc and india_pri:
+            try:
+                mirror = _build_messages("india", {"india": india_pri}, {})
+                for i, m in enumerate(mirror):
+                    N.send_via(pt, pc, m, silent=(i > 0))
+                    time.sleep(SEND_DELAY_S)
+            except Exception as exc:
+                print(f"WARN priority mirror failed: {exc}")
+
     if ok:
         db.mark_sent(urls)
     return {

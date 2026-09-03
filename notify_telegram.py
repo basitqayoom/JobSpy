@@ -76,6 +76,9 @@ def _config() -> dict:
         "india_chat_id": os.environ.get("TELEGRAM_INDIA_CHAT_ID", "").strip(),
         "global_token": os.environ.get("TELEGRAM_GLOBAL_BOT_TOKEN", "").strip(),
         "global_chat_id": os.environ.get("TELEGRAM_GLOBAL_CHAT_ID", "").strip(),
+        # India priority-only mirror
+        "priority_india_token":  os.environ.get("TELEGRAM_PRIORITY_INDIA_BOT_TOKEN", "").strip(),
+        "priority_india_chat_id": os.environ.get("TELEGRAM_PRIORITY_INDIA_CHAT_ID", "").strip(),
     }
 
 
